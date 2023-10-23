@@ -1,0 +1,14 @@
+## FCHK-PREFIX ##
+## R cat %s
+
+## This comment is ignored because it does not
+## resemble a valid directive, even though it
+## starts with the directive prefix.
+
+## * Lorem ipsum dolor sit amet
+Lorem ipsum dolor sit amet
+
+## Check should ignore spaces.
+## * Lorem    ipsum dolor sit amet
+Lorem ipsum     dolor sit    amet
+

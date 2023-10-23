@@ -1,0 +1,12 @@
+## IDE and editor files.
+.idea/
+.vscode/
+.cache/
+
+## Build files.
+/out/
+/fchk
+/fchk.exe
+
+## Valgrind.
+callgrind.out.*
