@@ -143,7 +143,7 @@ Regex::Regex(std::string_view pattern) {
     data_ptr = pcre2_match_data_create_from_pattern(expr, nullptr);
 }
 
-bool Regex::match(std::string_view str) const noexcept {
+bool Regex::match(std::string_view str, u32 flags = PCRE2_ANCHORED) const noexcept {
     auto re = reinterpret_cast<pcre2_code*>(re_ptr);
     auto data = reinterpret_cast<pcre2_match_data*>(data_ptr);
     int code = pcre2_match(
@@ -151,7 +151,7 @@ bool Regex::match(std::string_view str) const noexcept {
         reinterpret_cast<PCRE2_SPTR8>(str.data()),
         str.size(),
         0,
-        PCRE2_ANCHORED,
+        flags,
         data,
         nullptr
     );
@@ -513,6 +513,7 @@ class Matcher {
             in == input_lines.end() or
             chk == ctx->checks.end() or
             std::next(chk)->dir == Directive::CheckNot or
+            std::next(chk)->dir == Directive::RegexCheckNot or
             std::next(chk)->dir == Directive::InternalCheckNotEmpty
         ) return;
         NextLine();
@@ -610,6 +611,16 @@ class Matcher {
 
                     SkipMatchingLine();
                 } break;
+
+                /// Check that this line does not match a regular expression.
+                case Directive::RegexCheckNot: {
+                    if (std::get<Regex>(chk->data)(in->text, 0)) {
+                        Diag::Error(ctx, chk->loc, "Input contains prohibited string");
+                        context.print("In this line");
+                    }
+
+                    SkipMatchingLine();
+                } break;
             }
 
             /// Take care not to go out of bounds here.
@@ -638,6 +649,7 @@ int Context::Run() {
         {DirectiveNames[+Directive::CheckNot], Directive::CheckNot},
         {DirectiveNames[+Directive::RegexCheckAny], Directive::RegexCheckAny},
         {DirectiveNames[+Directive::RegexCheckNext], Directive::RegexCheckNext},
+        {DirectiveNames[+Directive::RegexCheckNot], Directive::RegexCheckNot},
         {DirectiveNames[+Directive::Prefix], Directive::Prefix},
         {DirectiveNames[+Directive::Run], Directive::Run},
     };
@@ -714,7 +726,13 @@ int Context::Run() {
         /// Add the check
         auto loc = LocationIn(value, check_file);
         switch (it->second) {
-            default:
+            case Directive::Prefix:
+            case Directive::Run:
+            case Directive::InternalCheckEmpty:
+            case Directive::InternalCheckNextEmpty:
+            case Directive::InternalCheckNotEmpty:
+                Unreachable();
+
             _default:
                 checks.emplace_back(it->second, Stream{value}.fold_ws(), loc);
                 break;
@@ -737,7 +755,8 @@ int Context::Run() {
 
             /// Take care to handle regex directives.
             case Directive::RegexCheckAny:
-            case Directive::RegexCheckNext: {
+            case Directive::RegexCheckNext:
+            case Directive::RegexCheckNot: {
                 /// Regex constructor may throw so we don’t have to check for errors
                 /// everywhere we use a regular expression since there is no point in
                 /// trying to match anything with faulty regular expressions.

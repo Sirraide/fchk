@@ -33,4 +33,5 @@ asdfghjkl
 ##
 ## * foo
 ## ! foobar
+## re! [0-9]+
 foo bar

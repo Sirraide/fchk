@@ -106,6 +106,7 @@ enum struct Directive {
     CheckNot,
     RegexCheckAny,
     RegexCheckNext,
+    RegexCheckNot,
     Prefix,
     Run,
 
@@ -121,6 +122,7 @@ inline constexpr std::string_view DirectiveNames[]{
     "!",
     "re*",
     "re+",
+    "re!",
     "FCHK-PREFIX",
     "R",
 };
@@ -159,10 +161,10 @@ public:
     explicit Regex(std::string_view pattern);
 
     /// Match the regular expression against a string.
-    bool operator()(std::string_view str) const noexcept { return match(str); }
+    bool operator()(std::string_view str, u32 flags) const noexcept { return match(str, flags); }
 
     /// Match the regular expression against a string.
-    bool match(std::string_view str) const noexcept;
+    bool match(std::string_view str, u32 flags) const noexcept;
 };
 
 /// A check that needs to be, well, checked.
