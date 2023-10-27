@@ -109,6 +109,7 @@ enum struct Directive {
     RegexCheckAny,
     RegexCheckNext,
     RegexCheckNot,
+    Define,
     Prefix,
     Run,
 
@@ -125,6 +126,7 @@ inline constexpr std::string_view DirectiveNames[]{
     "re*",
     "re+",
     "re!",
+    "d",
     "FCHK-PREFIX",
     "R",
 };
@@ -215,9 +217,15 @@ public:
     /// \param str The string to match.
     /// \param env The environment to use and populate with captures.
     /// \param flags Flags to pass to the regex engine.
+    /// \param capture_visitor A visitor to invoke on each capture.
     /// \throw Regex::Exception if the pattern is invalid.
     /// \return Whether the match succeeded.
-    bool match(std::string_view str, utils::StrMap& env, u32 flags) const;
+    bool match(
+        std::string_view str,
+        utils::StrMap& env,
+        u32 flags,
+        std::function<void(std::string_view, std::string_view)> capture_visitor = {}
+    ) const;
 
     /// Visit all captures that are used but not defined by this regex.
     ///

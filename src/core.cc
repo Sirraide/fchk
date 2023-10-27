@@ -168,12 +168,17 @@ EnvironmentRegex::EnvironmentRegex(std::string pattern) : re_str(std::move(patte
     }
 }
 
-bool EnvironmentRegex::match(std::string_view str, utils::StrMap& env, u32 flags = 0) const {
+bool EnvironmentRegex::match(
+    std::string_view str,
+    utils::StrMap& env,
+    u32 flags = 0,
+    std::function<void(std::string_view, std::string_view)> capture_visitor
+) const {
     std::string subst;
 
     /// Substitute named captures that are not defined by this RE.
     auto FragmentVisitor = [&](std::string_view text) { subst += text; };
-    auto Visitor = [&] (std::string_view capture) {
+    auto Visitor = [&](std::string_view capture) {
         if (auto idx = env.find(capture); idx != env.end()) subst += idx->second;
         else throw Regex::Exception("Undefined capture '{}'", capture);
     };
@@ -196,7 +201,7 @@ bool EnvironmentRegex::match(std::string_view str, utils::StrMap& env, u32 flags
         if (code < 0) throw Regex::Exception("Failed to get capture index for '{}'", name);
         auto start = ov[2 * code];
         auto end = ov[2 * code + 1];
-        env[name] = str.substr(start, end - start);
+        capture_visitor(name, str.substr(start, end - start));
     }
 
     return true;
@@ -605,9 +610,10 @@ class Matcher {
 
     /// Match a line.
     bool MatchLine() {
+        const auto DoDef = [&](auto a, auto b) { Define(chk->loc, a, b); };
         if (auto s = std::get_if<std::string>(&chk->data)) return in->text.starts_with(*s);
         else if (auto re = std::get_if<Regex>(&chk->data)) return re->match(in->text);
-        else return std::get<EnvironmentRegex>(chk->data).match(in->text, env);
+        else return std::get<EnvironmentRegex>(chk->data).match(in->text, env, 0, DoDef);
     };
 
     /// Skip a line that matches if the next directive is not a ! directive.
@@ -622,6 +628,19 @@ class Matcher {
         NextLine();
     }
 
+    void Define(Location loc, std::string_view key, std::string_view value) {
+        if (env.contains(key)) Diag::Error(
+            ctx,
+            loc,
+            "Var '{}' is already defined. Use 'u {}' to undefine it.",
+            key,
+            key
+        );
+
+        env[std::string{key}] = value;
+    }
+
+    /// This function is allowed to throw.
     void Step() {
         LineContext context{*this};
         switch (chk->dir) {
@@ -629,6 +648,14 @@ class Matcher {
             case Directive::Prefix:
             case Directive::Run:
                 Unreachable();
+
+            case Directive::Define: {
+                auto& line = std::get<std::string>(chk->data);
+                Stream s{line};
+                auto name = s.read_to_ws(true);
+                auto value = *s.skip_ws();
+                Define(chk->loc, name, value);
+            } break;
 
             case Directive::InternalCheckEmpty: {
                 while (in != input_lines.end() and not in->text.empty()) NextLine();
@@ -725,7 +752,7 @@ class Matcher {
                 }
 
                 else if (auto env_re = std::get_if<EnvironmentRegex>(&chk->data)) {
-                    if (env_re->match(in->text, env, 0)) {
+                    if (env_re->match(in->text, env, 0, [&](auto a, auto b) { Define(chk->loc, a, b); })) {
                         /// TODO: Print environment.
                         Diag::Error(ctx, chk->loc, "Input contains prohibited string");
                         context.print("In this line");
@@ -775,6 +802,7 @@ int Context::Run() {
         {DirectiveNames[+Directive::RegexCheckAny], Directive::RegexCheckAny},
         {DirectiveNames[+Directive::RegexCheckNext], Directive::RegexCheckNext},
         {DirectiveNames[+Directive::RegexCheckNot], Directive::RegexCheckNot},
+        {DirectiveNames[+Directive::Define], Directive::Define},
         {DirectiveNames[+Directive::Prefix], Directive::Prefix},
         {DirectiveNames[+Directive::Run], Directive::Run},
     };
@@ -860,6 +888,7 @@ int Context::Run() {
             case Directive::InternalCheckNotEmpty:
                 Unreachable();
 
+            case Directive::Define:
             _default:
                 Add(Stream{value}.fold_ws(), d);
                 break;
