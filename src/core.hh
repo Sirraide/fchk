@@ -1,6 +1,7 @@
 #ifndef FCHK_CORE_HH
 #define FCHK_CORE_HH
 
+#include <utility>
 #include <utils.hh>
 #include <vector>
 
@@ -97,31 +98,85 @@ struct Location {
     [[nodiscard]] bool seekable() const;
 };
 
-/// Directive prefixes.
+/// Directive prefixes. Do NOT reorder these without
+/// also updating the DirectiveNames array below.
 enum struct Directive {
     CheckAny,
     CheckNext,
+    CheckNot,
     RegexCheckAny,
     RegexCheckNext,
     Prefix,
     Run,
+
+    /// These directives only exist internally.
+    InternalCheckEmpty,     ///< Match an empty line.
+    InternalCheckNextEmpty, ///< Match the next line as empty.
+    InternalCheckNotEmpty,  ///< Match the next line as not empty.
 };
 
 inline constexpr std::string_view DirectiveNames[]{
     "*",
     "+",
+    "!",
     "re*",
     "re+",
     "FCHK-PREFIX",
     "R",
 };
 
+class Regex {
+    void* re_ptr{};
+    void* data_ptr{};
+
+public:
+    struct Exception : std::exception {
+        std::string message;
+        explicit Exception(std::string message) : message(std::move(message)) {}
+    };
+
+    ~Regex() noexcept;
+
+    Regex(const Regex&) = delete;
+    Regex& operator=(const Regex&) = delete;
+
+    Regex(Regex&& other) noexcept
+        : re_ptr(std::exchange(other.re_ptr, nullptr)),
+          data_ptr(std::exchange(other.data_ptr, nullptr)) {}
+
+    Regex& operator=(Regex&& other) noexcept {
+        std::swap(re_ptr, other.re_ptr);
+        std::swap(data_ptr, other.data_ptr);
+        return *this;
+    }
+
+    /// Create a new regular expression.
+    ///
+    /// This constructor is explicit because it may throw.
+    ///
+    /// \param pattern The pattern to match.
+    /// \throw Regex::Exception if the pattern is invalid.
+    explicit Regex(std::string_view pattern);
+
+    /// Match the regular expression against a string.
+    bool operator()(std::string_view str) const noexcept { return match(str); }
+
+    /// Match the regular expression against a string.
+    bool match(std::string_view str) const noexcept;
+};
+
 /// A check that needs to be, well, checked.
 struct Check {
+    using Data = std::variant<std::string, Regex>;
+
     Directive dir;
-    std::string_view check_string;
-    bool use_regex;
+    Data data;
+    Location loc;
 };
+
+namespace detail {
+class Matcher;
+}
 
 struct Diag;
 class Context {
@@ -143,6 +198,7 @@ class Context {
 public:
     friend Location;
     friend Diag;
+    friend detail::Matcher;
 
     Context(
         std::string check,
@@ -152,15 +208,20 @@ public:
         prefix(prefix) {}
 
     /// Get the location of a string view in a file.
-    [[nodiscard]] auto LocationIn(std::string_view sv, File& file) const -> Location;
+    ///
+    /// Since this only works if this is exactly a string view taken
+    /// from the file, we ensure that only string views can be passed
+    /// in.
+    template <std::same_as<std::string_view> SV>
+    [[nodiscard]] auto LocationIn(SV sv, File& file) const -> Location {
+        auto start = sv.data() - file.contents.data();
+        return Location{u32(start), u16(sv.size()), &file};
+    }
 
     /// Entry point.
     int Run();
 
 private:
-    /// Attempt to match a line of text against a check.
-    bool MatchLine(std::string_view line, std::string_view check_string, bool regex);
-
     /// Run a test.
     void RunTest(std::string_view test);
 };
@@ -369,6 +430,10 @@ public:
 
     /// Check if this stream is empty.
     [[nodiscard]] bool empty() const { return text.empty(); }
+
+    /// Fold whitespace into a single space and trim
+    /// leading and trailing spaces.
+    auto fold_ws() const -> std::string;
 
     /// Read up to a delimiter.
     ///

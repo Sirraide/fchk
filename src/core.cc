@@ -1,7 +1,10 @@
 #include <core.hh>
 #include <fmt/color.h>
-#include <re.hh>
 #include <unordered_map>
+
+#define PCRE2_CODE_UNIT_WIDTH 8
+#define PCRE2_STATIC          1
+#include <pcre2.h>
 
 auto utils::Drain(FILE* f) -> std::string {
     std::string contents;
@@ -92,6 +95,67 @@ auto Location::seek_line_column() const -> LocInfoShort {
 
     /// Done!
     return info;
+}
+
+/// ===========================================================================
+///  Regex
+/// ===========================================================================
+Regex::~Regex() noexcept {
+    pcre2_code_free(reinterpret_cast<pcre2_code*>(re_ptr));
+    pcre2_match_data_free(reinterpret_cast<pcre2_match_data*>(data_ptr));
+}
+
+Regex::Regex(std::string_view pattern) {
+    int err{};
+    usz erroffs{};
+    auto expr = pcre2_compile(
+        reinterpret_cast<PCRE2_SPTR8>(pattern.data()),
+        pattern.size(),
+        PCRE2_DOTALL,
+        &err,
+        &erroffs,
+        nullptr
+    );
+
+    /// Compilation failed.
+    if (not expr) {
+        std::string buffer;
+        buffer.resize(4'096);
+        auto sz = pcre2_get_error_message(
+            err,
+            reinterpret_cast<PCRE2_UCHAR8*>(buffer.data()),
+            buffer.size()
+        );
+
+        if (sz == PCRE2_ERROR_BADDATA) Diag::Warning("PCRE error code is invalid");
+        else if (sz == PCRE2_ERROR_NOMEMORY) Diag::Warning("PCRE error buffer is too small to accommodate error message");
+        else buffer.resize(usz(sz));
+        throw Exception{std::move(buffer)};
+    }
+
+    /// JIT-compile the RE, if possible.
+    if (pcre2_jit_compile(expr, PCRE2_JIT_COMPLETE) != 0) {
+        pcre2_code_free(expr);
+        throw Exception("Failed to JIT compile regex");
+    }
+
+    re_ptr = expr;
+    data_ptr = pcre2_match_data_create_from_pattern(expr, nullptr);
+}
+
+bool Regex::match(std::string_view str) const noexcept {
+    auto re = reinterpret_cast<pcre2_code*>(re_ptr);
+    auto data = reinterpret_cast<pcre2_match_data*>(data_ptr);
+    int code = pcre2_match(
+        re,
+        reinterpret_cast<PCRE2_SPTR8>(str.data()),
+        str.size(),
+        0,
+        PCRE2_ANCHORED,
+        data,
+        nullptr
+    );
+    return code >= 0;
 }
 
 /// ===========================================================================
@@ -301,6 +365,17 @@ auto Stream::operator[](usz start, usz end) const -> SV {
     return text.substr(start, end - start);
 }
 
+auto Stream::fold_ws() const -> std::string {
+    std::string out;
+    Stream s{Trim(text)};
+    for (;;) {
+        out += s.read_to_ws(true);
+        if (s.empty()) return out;
+        out += ' ';
+        s.skip_ws();
+    }
+}
+
 auto Stream::read_to(SV delim, bool discard) -> SV {
     auto pos = text.find(delim);
     if (pos == SV::npos) {
@@ -371,15 +446,196 @@ auto Stream::yield_until(usz pos, bool remove) -> SV {
 /// ===========================================================================
 ///  Implementation
 /// ===========================================================================
-auto Context::LocationIn(std::string_view sv, File& file) const -> Location {
-    auto start = sv.data() - file.contents.data();
-    return Location{u32(start), u16(sv.size()), &file};
-}
+
+namespace detail {
+class Matcher {
+    struct Line {
+        std::string text;
+        Location loc;
+    };
+
+    Context* const ctx;
+    File& input_file;
+    std::vector<Line> input_lines;
+    std::vector<Line>::iterator in, prev;
+    std::vector<Check>::iterator chk;
+
+    /// For providing context around a line in error messages.
+    struct LineContext {
+        Matcher& m;
+        decltype(in) it = m.in, prev = m.prev;
+        void print(std::string_view msg) const {
+            Diag::Note(m.ctx, it->loc, "{}", msg).no_line();
+
+            /// Print only a couple of lines so we don’t dump 2000 lines of output
+            /// if the input is long. We start printing one line before the one we
+            /// started matching from;
+            const auto lc = it->loc.seek_line_column();
+            const auto start = lc.line == 1 ? 1 : lc.line - 1;
+            for (auto [i, line] : vws::enumerate(rgs::subrange{prev, m.input_lines.end()})) {
+                static constexpr usz max_lines = 7;
+                if (usz(i) >= max_lines) break;
+                fmt::print(stderr, " {: >{}} │ ", start + usz(i), utils::NumberWidth(start + max_lines - 1));
+                if (i == 1) fmt::print(stderr, "\033[1;32m{}\n\033[m", line.text.empty() ? "<empty>" : line.text);
+                else fmt::print(stderr, "{}\n", line.text);
+            }
+        };
+    };
+
+    Matcher(Context& ctx, File& input_file) : ctx{&ctx}, input_file{input_file} {
+        const auto ProcessLine = [&](auto&& r) -> Line {
+            auto sv = std::string_view{&*r.begin(), usz(rgs::distance(r))};
+            return {Stream{sv}.fold_ws(), ctx.LocationIn(sv, input_file)};
+        };
+
+        /// Split input into lines.
+        auto range = input_file.contents | vws::split('\n') | vws::transform(ProcessLine);
+        input_lines = {range.begin(), range.end()};
+        prev = in = input_lines.begin();
+        chk = ctx.checks.begin();
+    }
+
+    /// Advance the line and save the previous one.
+    void NextLine() {
+        prev = in;
+        ++in;
+    };
+
+    /// Match a line.
+    bool MatchLine() {
+        if (auto re = std::get_if<Regex>(&chk->data)) return re->match(in->text);
+        else return in->text.starts_with(std::get<std::string>(chk->data));
+    };
+
+    /// Skip a line that matches if the next directive is not a ! directive.
+    void SkipMatchingLine() {
+        if (
+            in == input_lines.end() or
+            chk == ctx->checks.end() or
+            std::next(chk)->dir == Directive::CheckNot or
+            std::next(chk)->dir == Directive::InternalCheckNotEmpty
+        ) return;
+        NextLine();
+    }
+
+    void Match() {
+        /// Match the input against the checks.
+        for (; chk != ctx->checks.end() and in != input_lines.end(); ++chk) {
+            LineContext context{*this};
+            switch (chk->dir) {
+                /// These should no longer exist here.
+                case Directive::Prefix:
+                case Directive::Run:
+                    Unreachable();
+
+                case Directive::InternalCheckEmpty: {
+                    while (in != input_lines.end() and not in->text.empty()) NextLine();
+                    if (in == input_lines.end()) {
+                        Diag::Error(ctx, chk->loc, "Expected empty line");
+                        context.print("Started matching here");
+                    }
+                } break;
+
+                case Directive::InternalCheckNextEmpty: {
+                    if (in->text.empty()) NextLine();
+                    else {
+                        Diag::Error(ctx, chk->loc, "Expected next line to be empty");
+                        context.print("Here");
+                    }
+                } break;
+
+                case Directive::InternalCheckNotEmpty: {
+                    if (not in->text.empty()) NextLine();
+                    else {
+                        Diag::Error(ctx, chk->loc, "Expected line to not be empty");
+                        context.print("Here");
+                    }
+                } break;
+
+                /// Check that any of the following lines matches.
+                case Directive::CheckAny:
+                case Directive::RegexCheckAny: {
+                    /// Perform matching.
+                    while (in != input_lines.end() and not MatchLine()) NextLine();
+
+                    /// We couldn’t find a line that matches.
+                    if (in == input_lines.end()) {
+                        Diag::Error(ctx, chk->loc, "Expected string not found in input");
+                        context.print("Started matching here");
+                        return;
+                    }
+
+                    /// Skip the matching line.
+                    SkipMatchingLine();
+                } break;
+
+                /// Check that this line matches.
+                case Directive::CheckNext:
+                case Directive::RegexCheckNext: {
+                    /// We may look ahead a few lines below so we can issue a better
+                    /// error message; make sure to reset the state in case we do that.
+                    const auto save = in;
+                    defer {
+                        in = save;
+                        prev = in == input_lines.begin() ? in : std::prev(in);
+                        SkipMatchingLine();
+                    };
+
+                    /// This line must match.
+                    if (not MatchLine()) {
+                        /// Try to see if one of the later lines matches.
+                        NextLine();
+                        while (in != input_lines.end() and not MatchLine()) NextLine();
+
+                        /// If the input was not on the next line, skip any CheckNext directives
+                        /// after this one since they might cause bogus errors if we’re already out
+                        /// of sync.
+                        if (in != input_lines.end()) {
+                            Diag::Error(ctx, chk->loc, "Line does not match expected string");
+                            while (chk != ctx->checks.end() and chk->dir == Directive::CheckNext) chk++;
+                        }
+
+                        /// If not, just print a generic error.
+                        else { Diag::Error(ctx, chk->loc, "Expected string not found in input"); }
+                        context.print("Expected match here");
+                    }
+                } break;
+
+                /// Check that this line does not match.
+                case Directive::CheckNot: {
+                    if (in->text.contains(std::get<std::string>(chk->data))) {
+                        Diag::Error(ctx, chk->loc, "Input contains prohibited string");
+                        context.print("In this line");
+                    }
+
+                    SkipMatchingLine();
+                } break;
+            }
+
+            /// Take care not to go out of bounds here.
+            if (chk == ctx->checks.end()) return;
+        }
+
+        /// If we have more checks than input lines, we have a problem.
+        if (chk != ctx->checks.end() and not ctx->has_error) Diag::Error(
+            ctx,
+            chk->loc,
+            "End of file reached looking for string"
+        );
+    }
+
+public:
+    static void Match(Context& ctx, File& input_file) {
+        Matcher{ctx, input_file}.Match();
+    }
+};
+} // namespace detail
 
 int Context::Run() {
     static std::unordered_map<std::string_view, Directive> name_directive_map{
         {DirectiveNames[+Directive::CheckAny], Directive::CheckAny},
         {DirectiveNames[+Directive::CheckNext], Directive::CheckNext},
+        {DirectiveNames[+Directive::CheckNot], Directive::CheckNot},
         {DirectiveNames[+Directive::RegexCheckAny], Directive::RegexCheckAny},
         {DirectiveNames[+Directive::RegexCheckNext], Directive::RegexCheckNext},
         {DirectiveNames[+Directive::Prefix], Directive::Prefix},
@@ -455,58 +711,65 @@ int Context::Run() {
             continue;
         }
 
-        checks.emplace_back(
-            it->second,
-            value,
-            it->second == Directive::RegexCheckAny or it->second == Directive::RegexCheckNext
-        );
+        /// Add the check
+        auto loc = LocationIn(value, check_file);
+        switch (it->second) {
+            default:
+            _default:
+                checks.emplace_back(it->second, Stream{value}.fold_ws(), loc);
+                break;
+
+            /// Optimise for empty lines.
+            case Directive::CheckAny:
+                if (value.empty()) checks.emplace_back(Directive::InternalCheckEmpty, Check::Data{}, loc);
+                else goto _default;
+                break;
+
+            case Directive::CheckNext:
+                if (value.empty()) checks.emplace_back(Directive::InternalCheckNextEmpty, Check::Data{}, loc);
+                else goto _default;
+                break;
+
+            case Directive::CheckNot:
+                if (value.empty()) checks.emplace_back(Directive::InternalCheckNotEmpty, Check::Data{}, loc);
+                else goto _default;
+                break;
+
+            /// Take care to handle regex directives.
+            case Directive::RegexCheckAny:
+            case Directive::RegexCheckNext: {
+                /// Regex constructor may throw so we don’t have to check for errors
+                /// everywhere we use a regular expression since there is no point in
+                /// trying to match anything with faulty regular expressions.
+                try {
+                    checks.emplace_back(it->second, Regex{Stream{value}.fold_ws()}, loc);
+                } catch (const Regex::Exception& e) {
+                    Diag::Error(
+                        this,
+                        LocationIn(value, check_file),
+                        "Invalid regular expression: {}",
+                        e.message
+                    );
+                }
+            } break;
+        }
     }
 
+    /// Don’t even bother matching if there was an error.
+    if (has_error) return 1;
+
+    /// Can’t check anything w/ no directives.
     if (run_directives.empty()) Diag::Fatal(
         "No {} directives found in check file!",
         DirectiveNames[+Directive::Run]
     );
 
+    /// Dew it.
     for (auto rd : run_directives) RunTest(rd);
     return has_error ? 1 : 0;
 }
 
-bool Context::MatchLine(std::string_view line, std::string_view check_string, bool regex) {
-    Stream in{Trim(line)};
-    Stream chk{Trim(check_string)};
-
-    while (not in.empty() and not chk.empty()) {
-        /// Matching ignores whitespace.
-        if (chk.at_any(Stream::Whitespace)) {
-            chk.skip_ws();
-            in.skip_ws();
-            continue;
-        }
-
-        /// Get the next word.
-        auto chk_word = chk.read_to_ws(true);
-        auto in_word = in.read_to_ws(true);
-
-        /// Regex match.
-        if (regex) {
-            if (not Regex(chk_word)(in_word)) return false;
-        }
-
-        /// Literal match.
-        else {
-            if (chk_word != in_word) return false;
-        }
-    }
-
-    /// Trailing data in a line is allowed.
-    return chk.empty();
-}
-
 void Context::RunTest(std::string_view test) {
-    static const auto MakeStringView = [](auto&& r) {
-        return std::string_view{&*r.begin(), usz(rgs::distance(r))};
-    };
-
     /// Substitute occurrences of `%s` with the file name.
     auto cmd = std::string{test};
     utils::ReplaceAll(cmd, "%s", check_file.path.string());
@@ -516,161 +779,5 @@ void Context::RunTest(std::string_view test) {
     if (not pipe) Diag::Fatal("Failed to run command '{}': {}", cmd, std::strerror(errno));
     File input_file{utils::Drain(pipe), "<input>"};
     ::pclose(pipe);
-
-    /// Matching state.
-    auto input_lines = input_file.contents | vws::split('\n') | vws::transform(MakeStringView);
-    auto chk = checks.begin();
-    auto in = input_lines.begin();
-    auto prev = in;
-
-    /// Advance the line and save the previous one.
-    auto NextLine = [&] {
-        prev = in;
-        ++in;
-    };
-
-    /// Print the context around a line.
-    auto PrintContext = [&](auto it, auto prev_line_it) {
-        auto loc = LocationIn(*it, input_file);
-        Diag::Note(
-            this,
-            loc,
-            "Expected match here"
-        )
-            .no_line();
-
-        /// Print only a couple of lines so we don’t dump 2000 lines of output
-        /// if the input is long. We start printing one line before the one we
-        /// started matching from;
-        const auto lc = loc.seek_line_column();
-        const auto start = lc.line == 1 ? 1 : lc.line - 1;
-        for (auto [i, line] : vws::enumerate(rgs::subrange{prev_line_it, input_lines.end()})) {
-            static constexpr usz max_lines = 7;
-            if (usz(i) >= max_lines) break;
-            fmt::print(stderr, " {: >{}} │ ", start + usz(i), utils::NumberWidth(start + max_lines - 1));
-            if (i == 1) fmt::print(stderr, "\033[1;32m{}\n\033[m", line);
-            else fmt::print(stderr, "{}\n", line);
-        }
-    };
-
-    /// Regex constructor may throw so we don’t have to check for errors
-    /// everywhere we use a regular expression since there is no point in
-    /// trying to match anything with faulty regular expressions.
-    try {
-        /// Match the input against the checks.
-        for (; chk != checks.end() and in != input_lines.end(); ++chk) {
-            switch (chk->dir) {
-                /// These are not check directives.
-                case Directive::Prefix:
-                case Directive::Run:
-                    Unreachable();
-
-                /// Check that any of the following lines matches this line.
-                case Directive::CheckAny:
-                case Directive::RegexCheckAny: {
-                    /// If the value of this directive is not empty, skip
-                    /// to the next non-empty line, for better diagnostics.
-                    if (not chk->check_string.empty()) {
-                        while (in != input_lines.end() and (*in).empty()) NextLine();
-                        if (in == input_lines.end()) {
-                            Diag::Error(
-                                this,
-                                LocationIn(chk->check_string, check_file),
-                                "No match for '{}' in output. All remaining lines are empty",
-                                chk->check_string
-                            );
-                            return;
-                        }
-                    }
-
-                    /// Save current line for diagnostics.
-                    auto save_prev = prev;
-                    auto save = in;
-
-                    /// Perform matching.
-                    while (
-                        in != input_lines.end() and
-                        not MatchLine(*in, chk->check_string, chk->use_regex)
-                    ) NextLine();
-
-                    /// We couldn’t find a line that matches.
-                    if (in == input_lines.end()) {
-                        Diag::Error(
-                            this,
-                            LocationIn(chk->check_string, check_file),
-                            "No match for '{}' in input",
-                            chk->check_string
-                        );
-
-                        PrintContext(save, save_prev);
-                        return;
-                    }
-
-                    NextLine();
-                } break;
-
-                case Directive::CheckNext:
-                case Directive::RegexCheckNext: {
-                    auto save_prev = prev;
-                    auto save = in;
-                    defer { in = ++save; };
-
-                    /// This line must match.
-                    if (not MatchLine(*in, chk->check_string, chk->use_regex)) {
-                        /// Try to see if one of the later lines matches.
-                        NextLine();
-                        while (
-                            in != input_lines.end() and
-                            not MatchLine(*in, chk->check_string, chk->use_regex)
-                        ) NextLine();
-                        if (in != input_lines.end()) {
-                            Diag::Error(
-                                this,
-                                LocationIn(chk->check_string, check_file),
-                                "Match for '{}' was not on the next line",
-                                chk->check_string
-                            );
-
-                            /// Skip any CheckNext directives after this one since they might
-                            /// cause bogus errors if we’re already out of sync.
-                            while (chk != checks.end() and chk->dir == Directive::CheckNext) chk++;
-                        }
-
-                        /// If not, just print a generic error.
-                        else {
-                            Diag::Error(
-                                this,
-                                LocationIn(chk->check_string, check_file),
-                                "No match for '{}' in input",
-                                chk->check_string
-                            );
-                        }
-
-                        PrintContext(save, save_prev);
-                    }
-                } break;
-            }
-
-            /// Take care not to go out of bounds here.
-            if (chk == checks.end()) return;
-        }
-        /// If we have more checks than input lines, we have a problem.
-        if (chk != checks.end() and not has_error) Diag::Error(
-            this,
-            LocationIn(chk->check_string, check_file),
-            "String '{}' not found in output",
-            chk->check_string
-        );
-    }
-
-    /// There was an invalid regular expression.
-    catch (const Regex::Exception& e) {
-        Diag::Error(
-            this,
-            LocationIn(chk->check_string, check_file),
-            "Invalid regular expression '{}': {}",
-            chk->check_string,
-            e.message
-        );
-    }
+    detail::Matcher::Match(*this, input_file);
 }

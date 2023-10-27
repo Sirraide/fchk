@@ -21,7 +21,16 @@ B
 C
 
 ## Check using a regular expression
-## re* [0-9+]
+## re* [0-9]+
 ## re+ [a-z]+
 1234567890
 asdfghjkl
+
+## Check that a line does *not* contain a pattern.
+##
+## This attaches to preceding (re)* and (re)+ directives and
+## checks the same line that those directives matched.
+##
+## * foo
+## ! foobar
+foo bar
