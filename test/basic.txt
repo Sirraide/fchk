@@ -112,7 +112,7 @@ T
 ## them, you can write `u *` to undefine *all* variables.
 ##
 ## u *
-## * U
+## * foobarbaz
 ## re+ (?<tmp>\d+) - (?<foo>\d+) = $foo - $tmp
-U
+foobarbaz
 42 - 43 = 43 - 42

@@ -657,6 +657,21 @@ class Matcher {
         env[std::string{key}] = value;
     }
 
+    /// Issue an error at the current position and print the environment
+    /// if the current directive is a regex directive and it is not empty.
+    void PrintRegexError(std::string_view msg) {
+        Diag::Error(ctx, chk->loc, "{}", msg);
+        if (
+            chk->dir == Directive::RegexCheckAny or
+            chk->dir == Directive::RegexCheckNext or
+            chk->dir == Directive::RegexCheckNot
+        ) {
+            if (env.empty()) return;
+            auto env_strs = env | vws::transform([](auto&& p) { return fmt::format("{} = {}", p.first, p.second); });
+            Diag::Note(ctx, chk->loc, "With env: [\n    {}\n]\n", fmt::join(env_strs, "\n    ")).no_line();
+        }
+    }
+
     /// \brief This function is allowed to throw.
     ///
     /// This function makes use of a variety of exceptions to abort the
@@ -723,8 +738,7 @@ class Matcher {
 
                 /// We couldn’t find a line that matches.
                 if (in == input_lines.end()) {
-                    /// TODO: Print environment.
-                    Diag::Error(ctx, chk->loc, "Expected string not found in input");
+                    PrintRegexError("Expected string not found in input");
                     context.print("Started matching here");
                     return;
                 }
@@ -760,7 +774,7 @@ class Matcher {
                     }
 
                     /// If not, just print a generic error.
-                    else { Diag::Error(ctx, chk->loc, "Expected string not found in input"); }
+                    else { PrintRegexError("Expected string not found in input"); }
                     /// TODO: Print environment.
                     context.print("Expected match here");
                 }
@@ -787,8 +801,7 @@ class Matcher {
 
                 else if (auto env_re = std::get_if<EnvironmentRegex>(&chk->data)) {
                     if (env_re->match(in->text, env, 0, [&](auto a, auto b) { Define(a, b); })) {
-                        /// TODO: Print environment.
-                        Diag::Error(ctx, chk->loc, "Input contains prohibited string");
+                        PrintRegexError("Input contains prohibited string");
                         context.print("In this line");
                     }
                 }
