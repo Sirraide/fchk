@@ -100,6 +100,12 @@ auto Location::seek_line_column() const -> LocInfoShort {
 /// ===========================================================================
 ///  Regex
 /// ===========================================================================
+/// Exception type to signal redefinition failure.
+struct RedefError : std::exception {
+    std::string var;
+    RedefError(std::string var) : var{std::move(var)} {}
+};
+
 Regex::~Regex() noexcept {
     pcre2_code_free(reinterpret_cast<pcre2_code*>(re_ptr));
     pcre2_match_data_free(reinterpret_cast<pcre2_match_data*>(data_ptr));
@@ -176,17 +182,57 @@ bool EnvironmentRegex::match(
 ) const {
     std::string subst;
 
-    /// Substitute named captures that are not defined by this RE.
-    auto FragmentVisitor = [&](std::string_view text) { subst += text; };
-    auto Visitor = [&](std::string_view capture, bool escape) {
-        if (auto idx = env.find(capture); idx != env.end()) {
-            if (not escape) subst += idx->second;
-            else subst += fmt::format("\\Q{}\\E", idx->second);
-        } else {
-            throw Regex::Exception("Undefined capture '{}'", capture);
+    /// Ensure defined captures don’t overwrite the ENV.
+    for (auto& c : defined_captures)
+        if (env.contains(c))
+            throw RedefError(c);
+
+    /// Substitute named captures that are not defined by this RE and
+    /// convert dollar-style captures that are to PCRE2-style '\k<name>'
+    /// captures.
+    for (Stream s{re_str};;) {
+        static constinit std::array<std::string_view, 2> delims{R"(\k<)", "$"sv};
+        static const auto IsCaptureGroupName = [](char c) { return std::isalnum(u8(c)) or c == '_'; };
+        const auto Add = [&](std::string_view capture, bool escape) {
+            if (auto idx = env.find(capture); idx != env.end()) {
+                if (not escape) subst += idx->second;
+                else subst += fmt::format("\\Q{}\\E", idx->second);
+            } else {
+                throw Regex::Exception("Undefined capture '{}'", capture);
+            }
+        };
+
+        /// Get start of next capture group.
+        auto fragment = s.read_to_any(delims, true);
+        subst += fragment;
+
+        /// An '$' on its own is not a capture group, so we always need
+        /// at least two characters (the '$' and another character) for
+        /// this to be a capture.
+        if (s.size() < 2) break;
+
+        /// PCRE2-style '\k<name>' capture group.
+        if (s[0, 1] == "\\") {
+            s.skip(R"(\k<)"sv.size());
+            auto name = s.read_while(IsCaptureGroupName, true);
+            if (not defined_captures.contains(name)) Add(name, false);
+            s.skip(">"sv.size());
         }
-    };
-    visit_captures(Visitor, FragmentVisitor);
+
+        /// Dollar capture, w/ optional escaping.
+        else {
+            bool escape = false;
+            s.skip("$"sv.size());
+            if (s.at("$")) {
+                s.skip("$"sv.size());
+                escape = true;
+            }
+
+            auto name = s.read_while(IsCaptureGroupName, true);
+            if (defined_captures.contains(name)) subst += fmt::format("\\k<{}>", name);
+            else Add(name, escape);
+        }
+    }
 
     /// Compile the RE and execute it.
     Regex re{subst};
@@ -209,46 +255,6 @@ bool EnvironmentRegex::match(
     }
 
     return true;
-}
-
-void EnvironmentRegex::visit_captures(
-    std::function<void(std::string_view, bool)> visitor,
-    std::function<void(std::string_view)> fragment_visitor
-) const {
-    for (Stream s{re_str};;) {
-        static constinit std::array<std::string_view, 2> delims{R"(\k<)", "$"sv};
-        static const auto IsCaptureGroupName = [](char c) { return std::isalnum(u8(c)) or c == '_'; };
-
-        /// Get start of next capture group.
-        auto fragment = s.read_to_any(delims, true);
-        if (fragment_visitor) fragment_visitor(fragment);
-
-        /// An '$' on its own is not a capture group, so we always need
-        /// at least two characters (the '$' and another character) for
-        /// this to be a capture.
-        if (s.size() < 2) break;
-
-        /// PCRE2-style '\k<name>' capture group.
-        if (s[0, 1] == "\\") {
-            s.skip(R"(\k<)"sv.size());
-            auto name = s.read_while(IsCaptureGroupName, true);
-            if (not defined_captures.contains(name)) visitor(name, false);
-            s.skip(">"sv.size());
-        }
-
-        /// Dollar capture, w/ optional escaping.
-        else {
-            bool escape = false;
-            s.skip("$"sv.size());
-            if (s.at("$")) {
-                s.skip("$"sv.size());
-                escape = true;
-            }
-
-            auto name = s.read_while(IsCaptureGroupName, true);
-            if (not defined_captures.contains(name)) visitor(name, escape);
-        }
-    }
 }
 
 /// ===========================================================================
@@ -628,7 +634,7 @@ class Matcher {
 
     /// Match a line.
     bool MatchLine() {
-        const auto DoDef = [&](auto a, auto b) { Define(chk->loc, a, b); };
+        const auto DoDef = [&](auto a, auto b) { Define(a, b); };
         if (auto s = std::get_if<std::string>(&chk->data)) return in->text.starts_with(*s);
         else if (auto re = std::get_if<Regex>(&chk->data)) return re->match(in->text);
         else return std::get<EnvironmentRegex>(chk->data).match(in->text, env, 0, DoDef);
@@ -646,19 +652,22 @@ class Matcher {
         NextLine();
     }
 
-    void Define(Location loc, std::string_view key, std::string_view value) {
-        if (env.contains(key)) Diag::Error(
-            ctx,
-            loc,
-            "Var '{}' is already defined. Use 'u {}' to undefine it.",
-            key,
-            key
-        );
-
+    void Define(std::string_view key, std::string_view value) {
+        if (env.contains(key)) throw RedefError(std::string{key});
         env[std::string{key}] = value;
     }
 
-    /// This function is allowed to throw.
+    /// \brief This function is allowed to throw.
+    ///
+    /// This function makes use of a variety of exceptions to abort the
+    /// matching process since getting access to all the data required
+    /// to emit an error from deep within some regex callback is not all
+    /// that feasible.
+    ///
+    /// This function should only ever be called in one place in Match().
+    ///
+    /// \throw Regex::Exception on an error during Regex compilation.
+    /// \throw RedefError when attempting to redefine a variable.
     void Step() {
         LineContext context{*this};
         switch (chk->dir) {
@@ -672,7 +681,14 @@ class Matcher {
                 Stream s{line};
                 auto name = s.read_to_ws(true);
                 auto value = *s.skip_ws();
-                Define(chk->loc, name, value);
+                Define(name, value);
+            } break;
+
+            case Directive::Undefine: {
+                auto& var = std::get<std::string>(chk->data);
+                auto it = env.find(var);
+                if (it != env.end()) env.erase(it);
+                else Diag::Warning(ctx, chk->loc, "Variable '{}' is not defined", var);
             } break;
 
             case Directive::InternalCheckEmpty: {
@@ -770,7 +786,7 @@ class Matcher {
                 }
 
                 else if (auto env_re = std::get_if<EnvironmentRegex>(&chk->data)) {
-                    if (env_re->match(in->text, env, 0, [&](auto a, auto b) { Define(chk->loc, a, b); })) {
+                    if (env_re->match(in->text, env, 0, [&](auto a, auto b) { Define(a, b); })) {
                         /// TODO: Print environment.
                         Diag::Error(ctx, chk->loc, "Input contains prohibited string");
                         context.print("In this line");
@@ -791,6 +807,14 @@ class Matcher {
                 Step();
             } catch (const Regex::Exception& e) {
                 Diag::Error(ctx, chk->loc, "Invalid regular expression: {}", e.message);
+            } catch (const RedefError& e) {
+                Diag::Error(
+                    ctx,
+                    chk->loc,
+                    "'{}' is already defined. Use 'u {}' to undefine it.",
+                    e.var,
+                    e.var
+                );
             }
 
             /// Take care not to go out of bounds here.
@@ -821,6 +845,7 @@ int Context::Run() {
         {DirectiveNames[+Directive::RegexCheckNext], Directive::RegexCheckNext},
         {DirectiveNames[+Directive::RegexCheckNot], Directive::RegexCheckNot},
         {DirectiveNames[+Directive::Define], Directive::Define},
+        {DirectiveNames[+Directive::Undefine], Directive::Undefine},
         {DirectiveNames[+Directive::Prefix], Directive::Prefix},
         {DirectiveNames[+Directive::Run], Directive::Run},
     };
@@ -907,6 +932,7 @@ int Context::Run() {
                 Unreachable();
 
             case Directive::Define:
+            case Directive::Undefine:
             _default:
                 Add(Stream{value}.fold_ws(), d);
                 break;

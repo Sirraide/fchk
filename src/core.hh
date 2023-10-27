@@ -110,6 +110,7 @@ enum struct Directive {
     RegexCheckNext,
     RegexCheckNot,
     Define,
+    Undefine,
     Prefix,
     Run,
 
@@ -127,6 +128,7 @@ inline constexpr std::string_view DirectiveNames[]{
     "re+",
     "re!",
     "d",
+    "u",
     "FCHK-PREFIX",
     "R",
 };
@@ -225,16 +227,6 @@ public:
         utils::StrMap& env,
         u32 flags,
         std::function<void(std::string_view, std::string_view)> capture_visitor = {}
-    ) const;
-
-    /// Visit all captures that are used but not defined by this regex.
-    ///
-    /// The \c visitor is invoked on the name of each capture, and the
-    /// \c fragment_visitor on each text fragment before, inbetween and
-    /// after.
-    void visit_captures(
-        std::function<void(std::string_view name, bool should_escape)> visitor,
-        std::function<void(std::string_view fragment)> fragment_visitor = {}
     ) const;
 };
 

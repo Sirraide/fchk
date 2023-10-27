@@ -1,15 +1,27 @@
+## Set the directive prefix to '##'. Alternatively you
+## can use the `-p` command-line option to set the prefix.
+##
+## The prefix directive is unique in that the literal string
+## 'FCHK PREFIX' (actually with a hyphen between FCHK and PREFIX
+## as seen below, but ## we can’t write it like that here, since
+## it would be parsed as a directive if we did that) is always
+## recognised as a directive, irrespective of what comes before
+## it in the same line. This is required to bootstrap the prefix.
+##
 ## FCHK-PREFIX ##
+
+## Run this command on this file before checking it.
 ## R sed /^#/d %s
 
-## This comment is ignored because it does not
-## resemble a valid directive, even though it
-## starts with the directive prefix.
+## This text is ignored because it does not resemble a
+## valid directive, even though it starts with the directive
+## prefix '##'.
 
 ## * Lorem ipsum dolor sit amet
 Lorem ipsum dolor sit amet
 
 ## Check should ignore spaces.
-## * Lorem    ipsum dolor sit amet
+## * Lorem    ipsum    dolor sit amet
 Lorem ipsum     dolor sit    amet
 
 ## Check consecutive lines
@@ -85,3 +97,13 @@ R
 ## re+ $$bar $bar $$bar
 S
 \d+ 12345 \d+
+
+## Attempting to redefine an already existing variable, whether
+## explicitly using `d` or implicitly by naming it in a pattern,
+## is an error. Use the `u` directive to undefine a variable.
+##
+## u tmp
+## * T
+## re+ (?<tmp>\d+) \+ $tmp
+T
+42 + 42
