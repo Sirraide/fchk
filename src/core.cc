@@ -686,8 +686,8 @@ class Matcher {
 
             case Directive::Undefine: {
                 auto& var = std::get<std::string>(chk->data);
-                auto it = env.find(var);
-                if (it != env.end()) env.erase(it);
+                if (var == "*") env.clear();
+                else if (auto it = env.find(var); it != env.end()) env.erase(it);
                 else Diag::Warning(ctx, chk->loc, "Variable '{}' is not defined", var);
             } break;
 

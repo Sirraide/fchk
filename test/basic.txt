@@ -107,3 +107,12 @@ S
 ## re+ (?<tmp>\d+) \+ $tmp
 T
 42 + 42
+
+## If you have been using a lot of variables and want to reuse
+## them, you can write `u *` to undefine *all* variables.
+##
+## u *
+## * U
+## re+ (?<tmp>\d+) - (?<foo>\d+) = $foo - $tmp
+U
+42 - 43 = 43 - 42
