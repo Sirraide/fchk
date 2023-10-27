@@ -1,11 +1,12 @@
 #ifndef FCHK_UTILS_HH
 #define FCHK_UTILS_HH
 
+#include <algorithm>
+#include <chrono>
 #include <filesystem>
 #include <fmt/format.h>
 #include <ranges>
-#include <algorithm>
-#include <chrono>
+#include <unordered_map>
 
 using u8 = uint8_t;
 using u16 = uint16_t;
@@ -63,6 +64,20 @@ struct DeferStage1 {
 } // namespace detail
 
 namespace utils {
+/// Hash for string types for heterogeneous lookup.
+struct StrHash {
+    using is_transparent = void;
+    template <typename T>
+    requires requires (T t) { std::string_view{t}; }
+    auto operator()(T&& t) const -> usz {
+        return std::hash<std::string_view>{}(std::string_view{std::forward<T>(t)});
+    }
+};
+
+template <typename Key, typename Value>
+using Map = std::unordered_map<Key, Value, StrHash, std::equal_to<>>;
+using StrMap = utils::Map<std::string, std::string>;
+
 /// Read the contents of a FILE* that isn’t an actual file on disk.
 auto Drain(FILE* f) -> std::string;
 

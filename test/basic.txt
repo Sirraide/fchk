@@ -35,3 +35,19 @@ asdfghjkl
 ## ! foobar
 ## re! [0-9]+
 foo bar
+
+## Named capture groups can be used in subsequent directives.
+##
+## Since it doesn’t make sense to have anything after a `$` in
+## a regular expression anyway, the syntax $name can be used as
+## an alternative to \k<name> if the name matches the regular
+## expression `[a-zA-Z0-9_]*`.
+##
+## * Q
+## re+ %(?<foo>[0-9]+) = call
+## re+ %[0-9]+ = add %\k<foo>, %\k<foo>
+## re+ %[0-9]+ = add %$foo, %$foo
+Q
+%123 = call @bar()
+%456 = add %123, %123
+%789 = add %123, %123

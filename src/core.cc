@@ -130,7 +130,7 @@ Regex::Regex(std::string_view pattern) {
         if (sz == PCRE2_ERROR_BADDATA) Diag::Warning("PCRE error code is invalid");
         else if (sz == PCRE2_ERROR_NOMEMORY) Diag::Warning("PCRE error buffer is too small to accommodate error message");
         else buffer.resize(usz(sz));
-        throw Exception{std::move(buffer)};
+        throw Exception("{}", std::move(buffer));
     }
 
     /// JIT-compile the RE, if possible.
@@ -156,6 +156,76 @@ bool Regex::match(std::string_view str, u32 flags = PCRE2_ANCHORED) const noexce
         nullptr
     );
     return code >= 0;
+}
+
+EnvironmentRegex::EnvironmentRegex(std::string pattern) : re_str(std::move(pattern)) {
+    /// Find all captures defined by this pattern.
+    Stream s{re_str};
+    for (;;) {
+        auto group_name = s.skip_to("?<").skip(2).read_to_or_empty(">");
+        if (s.empty()) break;
+        defined_captures.emplace(group_name);
+    }
+}
+
+bool EnvironmentRegex::match(std::string_view str, utils::StrMap& env, u32 flags = 0) const {
+    std::string subst;
+
+    /// Substitute named captures that are not defined by this RE.
+    auto FragmentVisitor = [&](std::string_view text) { subst += text; };
+    auto Visitor = [&] (std::string_view capture) {
+        if (auto idx = env.find(capture); idx != env.end()) subst += idx->second;
+        else throw Regex::Exception("Undefined capture '{}'", capture);
+    };
+    visit_captures(Visitor, FragmentVisitor);
+
+    /// Compile the RE and execute it.
+    Regex re{subst};
+    auto res = re.match(str, flags);
+    if (not res) return false;
+
+    /// If the RE matches, extract the captures.
+    auto data = reinterpret_cast<pcre2_match_data*>(re.data_ptr);
+    auto ov = pcre2_get_ovector_pointer(data);
+    for (const auto& name : defined_captures) {
+        auto code = pcre2_substring_number_from_name(
+            reinterpret_cast<pcre2_code*>(re.re_ptr),
+            reinterpret_cast<PCRE2_SPTR>(name.data())
+        );
+
+        if (code < 0) throw Regex::Exception("Failed to get capture index for '{}'", name);
+        auto start = ov[2 * code];
+        auto end = ov[2 * code + 1];
+        env[name] = str.substr(start, end - start);
+    }
+
+    return true;
+}
+
+void EnvironmentRegex::visit_captures(
+    std::function<void(std::string_view)> visitor,
+    std::function<void(std::string_view)> fragment_visitor
+) const {
+    for (Stream s{re_str};;) {
+        static constinit std::array<std::string_view, 2> delims{R"(\k<)", "$"sv};
+        static const auto IsCaptureGroupName = [](char c) { return std::isalnum(u8(c)) or c == '_'; };
+
+        /// Get start of next capture group.
+        auto fragment = s.read_to_any(delims, true);
+        if (fragment_visitor) fragment_visitor(fragment);
+
+        /// An '$' on its own is not a capture group, so we always need
+        /// at least two characters (the '$' and another character) for
+        /// this to be a capture.
+        if (s.size() < 2) break;
+
+        /// Replace the capture if need be.
+        const bool k = s[0, 1] == "\\";
+        s.skip(1zu + k * 2zu);
+        auto name = s.read_while(IsCaptureGroupName, true);
+        if (not defined_captures.contains(name)) visitor(name);
+        s.skip(k);
+    }
 }
 
 /// ===========================================================================
@@ -271,6 +341,12 @@ void Diag::print() {
 
     /// Don’t print the same diagnostic twice.
     defer { kind = Kind::None; };
+
+    /// Separate error messages w/ an empty line.
+    if (ctx) {
+        if (kind != Kind::Note and ctx->has_diag) fmt::print(stderr, "\n");
+        ctx->has_diag = true;
+    }
 
     /// If the diagnostic is an error, set the error flag.
     if (kind == Kind::Error and ctx)
@@ -398,6 +474,18 @@ auto Stream::read_to_any(SV delims, bool discard) -> SV {
     return yield_until(pos, discard);
 }
 
+auto Stream::read_to_any(std::span<SV> delims, bool discard) -> SV {
+    auto poss = vws::transform(delims, [&](auto&& d) { return text.find(d); });
+    auto min = rgs::min(poss);
+    if (min == SV::npos) {
+        auto ret = text;
+        if (discard) text = "";
+        return ret;
+    }
+
+    return yield_until(min, discard);
+}
+
 auto Stream::read_to_or_empty(SV delim, bool discard) -> SV {
     auto pos = text.find(delim);
     if (pos == SV::npos) {
@@ -412,6 +500,11 @@ auto Stream::read_to_ws(bool discard) -> SV {
     return read_to_any(Whitespace, discard);
 }
 
+auto Stream::skip(usz n) -> Stream& {
+    text.remove_prefix(std::min(n, text.size()));
+    return *this;
+}
+
 auto Stream::skip_to(SV delim) -> Stream& {
     auto pos = text.find(delim);
     if (pos == SV::npos) text = "";
@@ -423,6 +516,14 @@ auto Stream::skip_to_any(SV delims) -> Stream& {
     auto pos = text.find_first_of(delims);
     if (pos == SV::npos) text = "";
     else text.remove_prefix(pos);
+    return *this;
+}
+
+auto Stream::skip_to_any(std::span<SV> delims) -> Stream& {
+    auto poss = vws::transform(delims, [&](auto&& d) { return text.find(d); });
+    auto min = rgs::min(poss);
+    if (min == SV::npos) text = "";
+    else text.remove_prefix(min);
     return *this;
 }
 
@@ -459,6 +560,7 @@ class Matcher {
     std::vector<Line> input_lines;
     std::vector<Line>::iterator in, prev;
     std::vector<Check>::iterator chk;
+    utils::StrMap env;
 
     /// For providing context around a line in error messages.
     struct LineContext {
@@ -503,8 +605,9 @@ class Matcher {
 
     /// Match a line.
     bool MatchLine() {
-        if (auto re = std::get_if<Regex>(&chk->data)) return re->match(in->text);
-        else return in->text.starts_with(std::get<std::string>(chk->data));
+        if (auto s = std::get_if<std::string>(&chk->data)) return in->text.starts_with(*s);
+        else if (auto re = std::get_if<Regex>(&chk->data)) return re->match(in->text);
+        else return std::get<EnvironmentRegex>(chk->data).match(in->text, env);
     };
 
     /// Skip a line that matches if the next directive is not a ! directive.
@@ -519,108 +622,130 @@ class Matcher {
         NextLine();
     }
 
+    void Step() {
+        LineContext context{*this};
+        switch (chk->dir) {
+            /// These should no longer exist here.
+            case Directive::Prefix:
+            case Directive::Run:
+                Unreachable();
+
+            case Directive::InternalCheckEmpty: {
+                while (in != input_lines.end() and not in->text.empty()) NextLine();
+                if (in == input_lines.end()) {
+                    Diag::Error(ctx, chk->loc, "Expected empty line");
+                    context.print("Started matching here");
+                }
+            } break;
+
+            case Directive::InternalCheckNextEmpty: {
+                if (in->text.empty()) NextLine();
+                else {
+                    Diag::Error(ctx, chk->loc, "Expected next line to be empty");
+                    context.print("Here");
+                }
+            } break;
+
+            case Directive::InternalCheckNotEmpty: {
+                if (not in->text.empty()) NextLine();
+                else {
+                    Diag::Error(ctx, chk->loc, "Expected line to not be empty");
+                    context.print("Here");
+                }
+            } break;
+
+            /// Check that any of the following lines matches.
+            case Directive::CheckAny:
+            case Directive::RegexCheckAny: {
+                /// Perform matching.
+                while (in != input_lines.end() and not MatchLine()) NextLine();
+
+                /// We couldn’t find a line that matches.
+                if (in == input_lines.end()) {
+                    /// TODO: Print environment.
+                    Diag::Error(ctx, chk->loc, "Expected string not found in input");
+                    context.print("Started matching here");
+                    return;
+                }
+
+                /// Skip the matching line.
+                SkipMatchingLine();
+            } break;
+
+            /// Check that this line matches.
+            case Directive::CheckNext:
+            case Directive::RegexCheckNext: {
+                /// We may look ahead a few lines below so we can issue a better
+                /// error message; make sure to reset the state in case we do that.
+                const auto save = in;
+                defer {
+                    in = save;
+                    prev = in == input_lines.begin() ? in : std::prev(in);
+                    SkipMatchingLine();
+                };
+
+                /// This line must match.
+                if (not MatchLine()) {
+                    /// Try to see if one of the later lines matches.
+                    NextLine();
+                    while (in != input_lines.end() and not MatchLine()) NextLine();
+
+                    /// If the input was not on the next line, skip any CheckNext directives
+                    /// after this one since they might cause bogus errors if we’re already out
+                    /// of sync.
+                    if (in != input_lines.end()) {
+                        Diag::Error(ctx, chk->loc, "Line does not match expected string");
+                        while (chk != ctx->checks.end() and chk->dir == Directive::CheckNext) chk++;
+                    }
+
+                    /// If not, just print a generic error.
+                    else { Diag::Error(ctx, chk->loc, "Expected string not found in input"); }
+                    /// TODO: Print environment.
+                    context.print("Expected match here");
+                }
+            } break;
+
+            /// Check that this line does not match.
+            case Directive::CheckNot: {
+                if (in->text.contains(std::get<std::string>(chk->data))) {
+                    Diag::Error(ctx, chk->loc, "Input contains prohibited string");
+                    context.print("In this line");
+                }
+
+                SkipMatchingLine();
+            } break;
+
+            /// Check that this line does not match a regular expression.
+            case Directive::RegexCheckNot: {
+                if (auto re = std::get_if<Regex>(&chk->data)) {
+                    if (re->match(in->text, 0)) {
+                        Diag::Error(ctx, chk->loc, "Input contains prohibited string");
+                        context.print("In this line");
+                    }
+                }
+
+                else if (auto env_re = std::get_if<EnvironmentRegex>(&chk->data)) {
+                    if (env_re->match(in->text, env, 0)) {
+                        /// TODO: Print environment.
+                        Diag::Error(ctx, chk->loc, "Input contains prohibited string");
+                        context.print("In this line");
+                    }
+                }
+
+                else {
+                    SkipMatchingLine();
+                }
+            } break;
+        }
+    }
+
     void Match() {
         /// Match the input against the checks.
         for (; chk != ctx->checks.end() and in != input_lines.end(); ++chk) {
-            LineContext context{*this};
-            switch (chk->dir) {
-                /// These should no longer exist here.
-                case Directive::Prefix:
-                case Directive::Run:
-                    Unreachable();
-
-                case Directive::InternalCheckEmpty: {
-                    while (in != input_lines.end() and not in->text.empty()) NextLine();
-                    if (in == input_lines.end()) {
-                        Diag::Error(ctx, chk->loc, "Expected empty line");
-                        context.print("Started matching here");
-                    }
-                } break;
-
-                case Directive::InternalCheckNextEmpty: {
-                    if (in->text.empty()) NextLine();
-                    else {
-                        Diag::Error(ctx, chk->loc, "Expected next line to be empty");
-                        context.print("Here");
-                    }
-                } break;
-
-                case Directive::InternalCheckNotEmpty: {
-                    if (not in->text.empty()) NextLine();
-                    else {
-                        Diag::Error(ctx, chk->loc, "Expected line to not be empty");
-                        context.print("Here");
-                    }
-                } break;
-
-                /// Check that any of the following lines matches.
-                case Directive::CheckAny:
-                case Directive::RegexCheckAny: {
-                    /// Perform matching.
-                    while (in != input_lines.end() and not MatchLine()) NextLine();
-
-                    /// We couldn’t find a line that matches.
-                    if (in == input_lines.end()) {
-                        Diag::Error(ctx, chk->loc, "Expected string not found in input");
-                        context.print("Started matching here");
-                        return;
-                    }
-
-                    /// Skip the matching line.
-                    SkipMatchingLine();
-                } break;
-
-                /// Check that this line matches.
-                case Directive::CheckNext:
-                case Directive::RegexCheckNext: {
-                    /// We may look ahead a few lines below so we can issue a better
-                    /// error message; make sure to reset the state in case we do that.
-                    const auto save = in;
-                    defer {
-                        in = save;
-                        prev = in == input_lines.begin() ? in : std::prev(in);
-                        SkipMatchingLine();
-                    };
-
-                    /// This line must match.
-                    if (not MatchLine()) {
-                        /// Try to see if one of the later lines matches.
-                        NextLine();
-                        while (in != input_lines.end() and not MatchLine()) NextLine();
-
-                        /// If the input was not on the next line, skip any CheckNext directives
-                        /// after this one since they might cause bogus errors if we’re already out
-                        /// of sync.
-                        if (in != input_lines.end()) {
-                            Diag::Error(ctx, chk->loc, "Line does not match expected string");
-                            while (chk != ctx->checks.end() and chk->dir == Directive::CheckNext) chk++;
-                        }
-
-                        /// If not, just print a generic error.
-                        else { Diag::Error(ctx, chk->loc, "Expected string not found in input"); }
-                        context.print("Expected match here");
-                    }
-                } break;
-
-                /// Check that this line does not match.
-                case Directive::CheckNot: {
-                    if (in->text.contains(std::get<std::string>(chk->data))) {
-                        Diag::Error(ctx, chk->loc, "Input contains prohibited string");
-                        context.print("In this line");
-                    }
-
-                    SkipMatchingLine();
-                } break;
-
-                /// Check that this line does not match a regular expression.
-                case Directive::RegexCheckNot: {
-                    if (std::get<Regex>(chk->data)(in->text, 0)) {
-                        Diag::Error(ctx, chk->loc, "Input contains prohibited string");
-                        context.print("In this line");
-                    }
-
-                    SkipMatchingLine();
-                } break;
+            try {
+                Step();
+            } catch (const Regex::Exception& e) {
+                Diag::Error(ctx, chk->loc, "Invalid regular expression: {}", e.message);
             }
 
             /// Take care not to go out of bounds here.
@@ -723,8 +848,10 @@ int Context::Run() {
             continue;
         }
 
-        /// Add the check
-        auto loc = LocationIn(value, check_file);
+        /// Add the check.
+        const auto d = it->second;
+        const auto loc = LocationIn(value, check_file);
+        const auto Add = [&](auto&& val, Directive d) { checks.emplace_back(d, std::forward<decltype(val)>(val), loc); };
         switch (it->second) {
             case Directive::Prefix:
             case Directive::Run:
@@ -734,22 +861,22 @@ int Context::Run() {
                 Unreachable();
 
             _default:
-                checks.emplace_back(it->second, Stream{value}.fold_ws(), loc);
+                Add(Stream{value}.fold_ws(), d);
                 break;
 
             /// Optimise for empty lines.
             case Directive::CheckAny:
-                if (value.empty()) checks.emplace_back(Directive::InternalCheckEmpty, Check::Data{}, loc);
+                if (value.empty()) Add(Check::Data{}, Directive::InternalCheckEmpty);
                 else goto _default;
                 break;
 
             case Directive::CheckNext:
-                if (value.empty()) checks.emplace_back(Directive::InternalCheckNextEmpty, Check::Data{}, loc);
+                if (value.empty()) Add(Check::Data{}, Directive::InternalCheckNextEmpty);
                 else goto _default;
                 break;
 
             case Directive::CheckNot:
-                if (value.empty()) checks.emplace_back(Directive::InternalCheckNotEmpty, Check::Data{}, loc);
+                if (value.empty()) Add(Check::Data{}, Directive::InternalCheckNotEmpty);
                 else goto _default;
                 break;
 
@@ -761,7 +888,10 @@ int Context::Run() {
                 /// everywhere we use a regular expression since there is no point in
                 /// trying to match anything with faulty regular expressions.
                 try {
-                    checks.emplace_back(it->second, Regex{Stream{value}.fold_ws()}, loc);
+                    /// Construct an environment regex if captures are used.
+                    static constinit std::array<std::string_view, 3> delims{"?<"sv, R"(\k<)", "$"sv};
+                    if (Stream{value}.skip_to_any(delims).size() >= 2) Add(EnvironmentRegex{Stream{value}.fold_ws()}, d);
+                    else Add(Regex{Stream{value}.fold_ws()}, d);
                 } catch (const Regex::Exception& e) {
                     Diag::Error(
                         this,

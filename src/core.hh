@@ -1,6 +1,8 @@
 #ifndef FCHK_CORE_HH
 #define FCHK_CORE_HH
 
+#include <functional>
+#include <unordered_set>
 #include <utility>
 #include <utils.hh>
 #include <vector>
@@ -127,14 +129,23 @@ inline constexpr std::string_view DirectiveNames[]{
     "R",
 };
 
+class EnvironmentRegex;
 class Regex {
     void* re_ptr{};
     void* data_ptr{};
 
+    friend EnvironmentRegex;
+protected:
+    Regex(void* re_ptr, void* data_ptr) noexcept
+        : re_ptr(re_ptr), data_ptr(data_ptr) {}
+
 public:
     struct Exception : std::exception {
         std::string message;
-        explicit Exception(std::string message) : message(std::move(message)) {}
+
+        template <typename... Args>
+        explicit Exception(fmt::format_string<Args...> fmt, Args&&... args)
+            : message(fmt::format(fmt, std::forward<Args>(args)...)) {}
     };
 
     ~Regex() noexcept;
@@ -161,15 +172,67 @@ public:
     explicit Regex(std::string_view pattern);
 
     /// Match the regular expression against a string.
+    ///
+    /// \param str The string to match.
+    /// \param flags Flags to pass to the regex engine.
+    /// \return Whether the match succeeded.
     bool operator()(std::string_view str, u32 flags) const noexcept { return match(str, flags); }
 
     /// Match the regular expression against a string.
+    ///
+    /// \param str The string to match.
+    /// \param flags Flags to pass to the regex engine.
+    /// \return Whether the match succeeded.
     bool match(std::string_view str, u32 flags) const noexcept;
+};
+
+/// Regular expression together with an environment. Prefer to
+/// use Regex over this if there are no named captures as it will
+/// be faster in the general case.
+class EnvironmentRegex {
+    std::string re_str;
+    std::unordered_set<std::string, utils::StrHash, std::equal_to<>> defined_captures;
+
+public:
+    /// Create a new regular expression.
+    ///
+    /// \param pattern The pattern to match.
+    EnvironmentRegex(std::string pattern);
+
+    /// Match the regular expression against a string.
+    ///
+    /// \param str The string to match.
+    /// \param env The environment to use and populate with captures.
+    /// \param flags Flags to pass to the regex engine.
+    /// \throw Regex::Exception if the pattern is invalid.
+    /// \return Whether the match succeeded.
+    bool operator()(std::string_view str, utils::StrMap& env, u32 flags) const {
+        return match(str, env, flags);
+    }
+
+    /// Match the regular expression against a string.
+    ///
+    /// \param str The string to match.
+    /// \param env The environment to use and populate with captures.
+    /// \param flags Flags to pass to the regex engine.
+    /// \throw Regex::Exception if the pattern is invalid.
+    /// \return Whether the match succeeded.
+    bool match(std::string_view str, utils::StrMap& env, u32 flags) const;
+
+    /// Visit all captures that are used but not defined by this regex.
+    ///
+    /// The \c visitor is invoked on the name of each capture, and the
+    /// \c fragment_visitor on each text fragment before, inbetween and
+    /// after.
+    void visit_captures(
+        std::function<void(std::string_view)> visitor,
+        std::function<void(std::string_view)> fragment_visitor = {}
+    ) const;
 };
 
 /// A check that needs to be, well, checked.
 struct Check {
-    using Data = std::variant<std::string, Regex>;
+    using Data = std::variant<std::string, Regex, EnvironmentRegex>;
 
     Directive dir;
     Data data;
@@ -196,6 +259,7 @@ class Context {
 
     /// Error flag.
     mutable bool has_error = false;
+    mutable bool has_diag = false;
 
 public:
     friend Location;
@@ -450,14 +514,34 @@ public:
     /// Read up to any of a set of delimiters.
     [[nodiscard]] auto read_to_any(SV delims, bool discard = false) -> SV;
 
+    /// Read up to any of a set of delimiters.
+    [[nodiscard]] auto read_to_any(std::span<SV> delims, bool discard = false) -> SV;
+
     /// Read up to the next whitespace character.
     [[nodiscard]] auto read_to_ws(bool discard = false) -> SV;
+
+    /// Read while a condition is true.
+    template <typename Predicate>
+    [[nodiscard]] auto read_while(Predicate pred, bool discard = false) -> SV {
+        usz pos = 0;
+        while (not text.empty() and pred(text[pos])) pos++;
+        return yield_until(pos, discard);
+    }
+
+    /// Get the size of the stream.
+    [[nodiscard]] auto size() const -> usz { return text.size(); }
+
+    /// Skip n characters.
+    auto skip(usz n) -> Stream&;
 
     /// Skip until a delimiter.
     auto skip_to(SV delim) -> Stream&;
 
     /// Skip until any of a set of delimiters.
     auto skip_to_any(SV delims) -> Stream&;
+
+    /// Skip until any of a set of delimiters.
+    auto skip_to_any(std::span<SV> delims) -> Stream&;
 
     /// Skip to the next whitespace character.
     auto skip_to_ws() -> Stream&;
