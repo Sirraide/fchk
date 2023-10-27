@@ -101,6 +101,8 @@ struct Location {
 enum struct Directive {
     CheckAny,
     CheckNext,
+    RegexCheckAny,
+    RegexCheckNext,
     Prefix,
     Run,
 };
@@ -108,6 +110,8 @@ enum struct Directive {
 inline constexpr std::string_view DirectiveNames[]{
     "*",
     "+",
+    "re*",
+    "re+",
     "FCHK-PREFIX",
     "R",
 };
@@ -116,6 +120,7 @@ inline constexpr std::string_view DirectiveNames[]{
 struct Check {
     Directive dir;
     std::string_view check_string;
+    bool use_regex;
 };
 
 struct Diag;
@@ -154,7 +159,7 @@ public:
 
 private:
     /// Attempt to match a line of text against a check.
-    bool MatchLine(std::string_view line, std::string_view check_string);
+    bool MatchLine(std::string_view line, std::string_view check_string, bool regex);
 
     /// Run a test.
     void RunTest(std::string_view test);

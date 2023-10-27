@@ -19,3 +19,9 @@ Lorem ipsum     dolor sit    amet
 A
 B
 C
+
+## Check using a regular expression
+## re* [0-9+]
+## re+ [a-z]+
+1234567890
+asdfghjkl

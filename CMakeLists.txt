@@ -164,8 +164,20 @@ if (NOT HAVE_CLOPTS_HH)
 	FetchContent_MakeAvailable(clopts)
 endif()
 
+## Find PCRE2.
+set(PCRE2_SUPPORT_JIT ON)
+set(PCRE2_BUILD_PCRE2GREP OFF)
+set(PCRE2_BUILD_TESTS OFF)
+message(STATUS "Downloading PCRE2 ...")
+FetchContent_Declare(pcre2
+    GIT_REPOSITORY https://github.com/PCRE2Project/pcre2
+    GIT_TAG pcre2-10.42
+    SOURCE_DIR "${CMAKE_CURRENT_BINARY_DIR}/libs/pcre2"
+)
+FetchContent_MakeAvailable(pcre2)
+
 ## Link against libfmt.
-target_link_libraries(options INTERFACE fmt)
+target_link_libraries(options INTERFACE fmt pcre2-8)
 
 ## ‘src’ should be an include directory.
 target_include_directories(options INTERFACE src)
