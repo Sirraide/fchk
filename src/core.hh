@@ -233,8 +233,8 @@ public:
     /// \c fragment_visitor on each text fragment before, inbetween and
     /// after.
     void visit_captures(
-        std::function<void(std::string_view)> visitor,
-        std::function<void(std::string_view)> fragment_visitor = {}
+        std::function<void(std::string_view name, bool should_escape)> visitor,
+        std::function<void(std::string_view fragment)> fragment_visitor = {}
     ) const;
 };
 

@@ -56,6 +56,32 @@ Q
 ## group manually w/o having to match a pattern first.
 ##
 ## d tmp %[0-9]+
+## * R
 ## re+ $tmp = add $tmp, $tmp
 R
 %1 = add %2, %3
+
+## Variable substitution behaves differently depending on whether
+## the variable is used by the same pattern that defines it or not.
+##
+## For example, in a pattern such as `(?<foo>\d+) $foo`, the string
+## `$foo` is rewritten to `\k<foo>` before the pattern is handed to
+## the regex engine.
+##
+## However, when `$foo` (or `\k<foo>`) is used in a pattern after
+## that, fchk will substitute the value that was bound to it in the
+## pattern that defined it; e.g., if the value ended up being `123`,
+## then `$foo` is replaced with `123`.
+##
+## As a result of this, if a variable’s value resembles a regular
+## expression, then it will be incorporated into the pattern as a
+## RE. This behaviour is intended since it allows you to split long
+## regexes into smaller parts. However, if you instead want to match
+## the *literal* value of a variable, then you can escape its value
+## using `$$`, e.g. `$$foo`.
+##
+## d bar \d+
+## * S
+## re+ $$bar $bar $$bar
+S
+\d+ 12345 \d+

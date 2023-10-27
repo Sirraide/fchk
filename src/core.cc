@@ -178,9 +178,13 @@ bool EnvironmentRegex::match(
 
     /// Substitute named captures that are not defined by this RE.
     auto FragmentVisitor = [&](std::string_view text) { subst += text; };
-    auto Visitor = [&](std::string_view capture) {
-        if (auto idx = env.find(capture); idx != env.end()) subst += idx->second;
-        else throw Regex::Exception("Undefined capture '{}'", capture);
+    auto Visitor = [&](std::string_view capture, bool escape) {
+        if (auto idx = env.find(capture); idx != env.end()) {
+            if (not escape) subst += idx->second;
+            else subst += fmt::format("\\Q{}\\E", idx->second);
+        } else {
+            throw Regex::Exception("Undefined capture '{}'", capture);
+        }
     };
     visit_captures(Visitor, FragmentVisitor);
 
@@ -208,7 +212,7 @@ bool EnvironmentRegex::match(
 }
 
 void EnvironmentRegex::visit_captures(
-    std::function<void(std::string_view)> visitor,
+    std::function<void(std::string_view, bool)> visitor,
     std::function<void(std::string_view)> fragment_visitor
 ) const {
     for (Stream s{re_str};;) {
@@ -224,12 +228,26 @@ void EnvironmentRegex::visit_captures(
         /// this to be a capture.
         if (s.size() < 2) break;
 
-        /// Replace the capture if need be.
-        const bool k = s[0, 1] == "\\";
-        s.skip(1zu + k * 2zu);
-        auto name = s.read_while(IsCaptureGroupName, true);
-        if (not defined_captures.contains(name)) visitor(name);
-        s.skip(k);
+        /// PCRE2-style '\k<name>' capture group.
+        if (s[0, 1] == "\\") {
+            s.skip(R"(\k<)"sv.size());
+            auto name = s.read_while(IsCaptureGroupName, true);
+            if (not defined_captures.contains(name)) visitor(name, false);
+            s.skip(">"sv.size());
+        }
+
+        /// Dollar capture, w/ optional escaping.
+        else {
+            bool escape = false;
+            s.skip("$"sv.size());
+            if (s.at("$")) {
+                s.skip("$"sv.size());
+                escape = true;
+            }
+
+            auto name = s.read_while(IsCaptureGroupName, true);
+            if (not defined_captures.contains(name)) visitor(name, escape);
+        }
     }
 }
 
