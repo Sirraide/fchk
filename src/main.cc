@@ -16,18 +16,7 @@ int main(int argc, char** argv) {
 
     /// User-provided prefix may not be empty.
     if (auto pre = opts.get<"-p">(); pre and Trim(*pre).empty())
-        die("Prefix may not be empty");
-
-/*    /// Read stdin if no -f option was provided.
-    std::string input;
-    static constexpr usz bufsize = 4'096;
-    for (;;) {
-        input.resize(input.size() + bufsize);
-        auto read = std::fread(input.data() + input.size() - bufsize, 1, bufsize, stdin);
-        if (read < bufsize) input.resize(input.size() - (bufsize - read));
-        if (std::ferror(stdin)) die("Error reading stdin: {}", std::strerror(errno));
-        if (std::feof(stdin)) break;
-    }*/
+        Diag::Fatal("Prefix may not be empty");
 
     Context ctx{
         std::move(opts.get<"checkfile">()->contents),

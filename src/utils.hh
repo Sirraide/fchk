@@ -5,6 +5,7 @@
 #include <fmt/format.h>
 #include <ranges>
 #include <algorithm>
+#include <chrono>
 
 using u8 = uint8_t;
 using u16 = uint16_t;
@@ -38,13 +39,10 @@ using iptr = intptr_t;
 namespace fs = std::filesystem;
 namespace rgs = std::ranges;
 namespace vws = std::ranges::views;
+namespace chr = std::chrono;
 
-template <typename... arguments>
-[[noreturn]] void die(fmt::format_string<arguments...> fmt, arguments&&... args) {
-    fmt::print(stderr, fmt, std::forward<arguments>(args)...);
-    fmt::print(stderr, "\n");
-    std::exit(1);
-}
+using namespace std::literals;
+using namespace std::chrono_literals;
 
 namespace detail {
 template <typename Callable>
@@ -65,6 +63,9 @@ struct DeferStage1 {
 } // namespace detail
 
 namespace utils {
+/// Read the contents of a FILE* that isn’t an actual file on disk.
+auto Drain(FILE* f) -> std::string;
+
 void ReplaceAll(
     std::string& str,
     std::string_view from,

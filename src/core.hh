@@ -100,12 +100,14 @@ struct Location {
 /// Directive prefixes.
 enum struct Directive {
     CheckAny,
+    CheckNext,
     Prefix,
     Run,
 };
 
 inline constexpr std::string_view DirectiveNames[]{
     "*",
+    "+",
     "FCHK-PREFIX",
     "R",
 };
@@ -123,6 +125,9 @@ class Context {
 
     /// The checks that we have to perform.
     std::vector<Check> checks;
+
+    /// Programs to execute.
+    std::vector<std::string_view> run_directives;
 
     /// Directive prefix.
     std::string_view prefix;
@@ -144,8 +149,15 @@ public:
     /// Get the location of a string view in a file.
     [[nodiscard]] auto LocationIn(std::string_view sv, File& file) const -> Location;
 
-    /// Check entry point.
+    /// Entry point.
     int Run();
+
+private:
+    /// Attempt to match a line of text against a check.
+    bool MatchLine(std::string_view line, std::string_view check_string);
+
+    /// Run a test.
+    void RunTest(std::string_view test);
 };
 
 /// A diagnostic. The diagnostic is issued when the destructor is called.
@@ -165,6 +177,7 @@ private:
     Kind kind;
     Location where;
     std::string msg;
+    bool print_line = true;
 
     /// Handle fatal error codes.
     void HandleFatalErrors();
@@ -225,6 +238,9 @@ public:
     template <typename... Args>
     Diag(Kind kind, fmt::format_string<Args...> fmt, Args&&... args)
         : Diag{kind, fmt::format(fmt, std::forward<Args>(args)...)} {}
+
+    /// Don’t print the source line.
+    void no_line() { print_line = false; }
 
     /// Print this diagnostic now. This resets the diagnostic.
     void print();
@@ -317,37 +333,53 @@ public:
 /// Helper to parse text from a string.
 class Stream {
     using SV = std::string_view;
-    static constexpr std::string_view ws = " \t\v\f";
 
     SV text;
 
+    /// Yield substring until pos and remove it from text.
+    SV yield_until(usz pos, bool remove);
+
 public:
+    static constexpr std::string_view Whitespace = " \t\v\f";
+
     Stream(SV text) : text(text) {}
 
     /// Get a range of characters.
     ///
     /// If either position is out of bounds, it will be
     /// clamped to the nearest valid position.
-    [[nodiscard]] auto operator[](usz start, usz end) const -> SV;
+    [[nodiscard]] auto operator[](usz start, usz end = std::numeric_limits<usz>::max()) const -> SV;
+
+    /// Get the entire text.
+    [[nodiscard]] auto operator*() const -> SV { return text; }
+
+    /// Check if this stream starts with text.
+    [[nodiscard]] bool at(SV sv) const { return text.starts_with(sv); }
+
+    /// Check if this stream starts with any of a set of characters.
+    [[nodiscard]] bool at_any(SV chars) const { return chars.find_first_of(text.front()) != SV::npos; }
 
     /// Get the current data pointer.
     [[nodiscard]] auto data() const -> const char* { return text.data(); }
 
+    /// Check if this stream is empty.
+    [[nodiscard]] bool empty() const { return text.empty(); }
+
     /// Read up to a delimiter.
     ///
-    /// If the delimiter is not found, this returns an empty string.
-    [[nodiscard]] auto read_to(SV delim) -> SV;
+    /// If the delimiter is not found, this returns the rest of the string.
+    [[nodiscard]] auto read_to(SV delim, bool discard = false) -> SV;
 
     /// Read up to a delimiter or the end of the string.
     ///
     /// If the delimiter is not found, this returns an empty string.
-    [[nodiscard]] auto read_to_or_end(SV delim) -> SV;
+    [[nodiscard]] auto read_to_or_empty(SV delim, bool discard = false) -> SV;
 
     /// Read up to any of a set of delimiters.
-    [[nodiscard]] auto read_to_any(SV delims) -> SV;
+    [[nodiscard]] auto read_to_any(SV delims, bool discard = false) -> SV;
 
     /// Read up to the next whitespace character.
-    [[nodiscard]] auto read_to_ws() -> SV;
+    [[nodiscard]] auto read_to_ws(bool discard = false) -> SV;
 
     /// Skip until a delimiter.
     auto skip_to(SV delim) -> Stream&;

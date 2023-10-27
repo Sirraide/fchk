@@ -1,5 +1,5 @@
 ## FCHK-PREFIX ##
-## R cat %s
+## R sed /^#/d %s
 
 ## This comment is ignored because it does not
 ## resemble a valid directive, even though it
@@ -12,3 +12,10 @@ Lorem ipsum dolor sit amet
 ## * Lorem    ipsum dolor sit amet
 Lorem ipsum     dolor sit    amet
 
+## Check consecutive lines
+## * A
+## + B
+## + C
+A
+B
+C

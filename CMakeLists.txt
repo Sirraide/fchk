@@ -137,10 +137,11 @@ endif()
 ## ============================================================================
 ##  Submodules and include dirs.
 ## ============================================================================
+include(FetchContent)
+
 ## Find libfmt.
 find_package(fmt CONFIG)
 if (NOT fmt_FOUND)
-    include(FetchContent)
 	message(STATUS "Fmtlib not found, downloading ...")
 	FetchContent_Declare(fmtlib
 		GIT_REPOSITORY https://github.com/fmtlib/fmt.git
@@ -154,7 +155,6 @@ endif()
 include(CheckIncludeFileCXX)
 check_include_file_cxx(clopts.hh HAVE_CLOPTS_HH)
 if (NOT HAVE_CLOPTS_HH)
-    include(FetchContent)
 	message(STATUS "Clopts not found, downloading ...")
 	FetchContent_Declare(clopts
 		GIT_REPOSITORY https://github.com/Sirraide/clopts.git
