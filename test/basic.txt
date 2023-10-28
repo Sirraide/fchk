@@ -74,23 +74,31 @@ R
 %1 = add %2, %3
 
 ## Variable substitution behaves differently depending on whether
-## the variable is used by the same pattern that defines it or not.
+## the variable is used by the same pattern that defines it or not,
+## and on whether the variable was captured in a pattern or defined
+## using `d`.
 ##
-## For example, in a pattern such as `(?<foo>\d+) $foo`, the string
-## `$foo` is rewritten to `\k<foo>` before the pattern is handed to
-## the regex engine.
+## For example, if the variable is used in the same regex that defines
+## it, such as `foo` in `(?<foo>\d+) $foo`, the string `$foo` is rewritten
+## to `\k<foo>` before the pattern is handed to the regex engine.
 ##
-## However, when `$foo` (or `\k<foo>`) is used in a pattern after
-## that, fchk will substitute the value that was bound to it in the
-## pattern that defined it; e.g., if the value ended up being `123`,
-## then `$foo` is replaced with `123`.
+## However, when `$foo` (or `\k<foo>`) is used in a pattern after that,
+## the regex engine can’t possibly know about it, so fchk will substitute
+## the value that was bound to it in the pattern that defined it; e.g. if
+## the value ended up being `123`, then `$foo` is replaced with `123`.
 ##
-## As a result of this, if a variable’s value resembles a regular
-## expression, then it will be incorporated into the pattern as a
-## RE. This behaviour is intended since it allows you to split long
-## regexes into smaller parts. However, if you instead want to match
-## the *literal* value of a variable, then you can escape its value
-## using `$$`, e.g. `$$foo`.
+## As a result of this, in this latter case, if a variable’s value
+## resembles a regular expression, then there are two things that can
+## happen:
+##
+##     1. The variable is matched literally.
+##     2. The variable is spliced into the pattern and treated as a RE.
+##
+## Case 1 applies to variables that are captured in an expression,
+## whereas case 2 applies to variables that are defined using `d`.
+##
+## To instead force a variable to be inserted literally, use two `$$`
+## instead of one `$`.
 ##
 ## d bar \d+
 ## * S
@@ -156,6 +164,19 @@ foo.bar
 baz^^.^^
 foo
 
+## When a variable is defined using `d`, at substitution time, the literal
+## character set will be that at definition time; for example, if you make
+## `+` literal, then define a variable, then make `+` non-literal, and
+## then finally use the variable, the `+`’s will still be matched
+## literally.
+##
+## p lit +
+## d plus +
+## p nolit +
+## * Z
+## re+ $plus$plus
+Z
+++
 
 ## Programs tend to contain an awful lot of parentheses, and typically
 ## you probably won’t really need capture groups as commonly as regular

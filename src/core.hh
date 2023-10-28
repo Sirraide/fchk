@@ -196,6 +196,15 @@ public:
     [[nodiscard]] auto raw_text() const noexcept -> std::string_view { return raw; }
 };
 
+/// Entry in the environment.
+struct EnvEntry {
+    std::string value;
+    bool literal;
+};
+
+/// Environment used by environment regexes.
+using Environment = utils::Map<std::string, EnvEntry>;
+
 /// Regular expression together with an environment. Prefer to
 /// use Regex over this if there are no named captures as it will
 /// be faster in the general case.
@@ -210,7 +219,7 @@ struct EnvironmentRegex {
     EnvironmentRegex(std::string pattern, std::unordered_set<char> literal_chars);
 
     /// Substitute environment variables in the string.
-    auto substitute_vars(const utils::StrMap& env) -> std::string;
+    auto substitute_vars(const Environment& env) -> std::string;
 };
 
 /// A check that needs to be, well, checked.

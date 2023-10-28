@@ -177,7 +177,7 @@ EnvironmentRegex::EnvironmentRegex(std::string pattern, std::unordered_set<char>
     }
 }
 
-auto EnvironmentRegex::substitute_vars(const utils::StrMap& env) -> std::string {
+auto EnvironmentRegex::substitute_vars(const Environment& env) -> std::string {
     std::string subst;
 
     /// Substitute named captures that are not defined by this RE and
@@ -187,17 +187,10 @@ auto EnvironmentRegex::substitute_vars(const utils::StrMap& env) -> std::string 
         static constinit std::array<std::string_view, 2> delims{R"(\k<)", "$"sv};
         static const auto IsCaptureGroupName = [](char c) { return std::isalnum(u8(c)) or c == '_'; };
         const auto Add = [&](std::string_view capture, bool escape) {
-            if (auto idx = env.find(capture); idx != env.end()) {
-                if (not escape) {
-                    /// Take care to escape the literals that were disabled
-                    /// when this regular expression was parsed.
-                    for (auto c : idx->second) {
-                        if (not literal_chars.contains(c)) subst += c;
-                        else subst += fmt::format("\\{}", c);
-                    }
-                } else {
-                    subst += fmt::format("\\Q{}\\E", idx->second);
-                }
+            if (auto var = env.find(capture); var != env.end()) {
+                /// Always escape literal variables.
+                if (not escape and not var->second.literal) subst += var->second.value;
+                else subst += fmt::format("\\Q{}\\E", var->second.value);
             } else {
                 throw Regex::Exception("Undefined capture '{}'", capture);
             }
@@ -216,7 +209,8 @@ auto EnvironmentRegex::substitute_vars(const utils::StrMap& env) -> std::string 
         if (s[0, 1] == "\\") {
             s.skip(R"(\k<)"sv.size());
             auto name = s.read_while(IsCaptureGroupName, true);
-            if (not defined_captures.contains(name)) Add(name, false);
+            if (defined_captures.contains(name)) subst += fmt::format("\\k<{}>", name);
+            else Add(name, false);
             s.skip(">"sv.size());
         }
 
@@ -570,7 +564,7 @@ class Matcher {
     std::vector<Line> input_lines;
     std::vector<Line>::iterator in, prev;
     std::vector<Check>::iterator chk;
-    utils::StrMap env;
+    Environment env;
 
     /// For providing context around a line in error messages.
     struct LineContext {
@@ -632,7 +626,7 @@ class Matcher {
             if (code < 0) throw Regex::Exception("Failed to get capture index for '{}'", name);
             auto start = ov[2 * code];
             auto end = ov[2 * code + 1];
-            Define(name, in->text.substr(start, end - start));
+            Define(name, in->text.substr(start, end - start), true);
         }
 
         return true;
@@ -663,9 +657,9 @@ class Matcher {
         NextLine();
     }
 
-    void Define(std::string_view key, std::string_view value) {
+    void Define(std::string_view key, std::string_view value, bool capture) {
         if (env.contains(key)) throw RedefError(std::string{key});
-        env[std::string{key}] = value;
+        env[std::string{key}] = {std::string{value}, capture};
     }
 
     /// Issue an error at the current position and print the environment
@@ -679,7 +673,7 @@ class Matcher {
         ) {
             if (env.empty()) return;
             if (ctx->verbose) {
-                auto env_strs = env | vws::transform([](auto&& p) { return fmt::format("{} = {}", p.first, p.second); });
+                auto env_strs = env | vws::transform([](auto&& p) { return fmt::format("{} = {}", p.first, p.second.value); });
                 Diag::Note(ctx, chk->loc, "With env: [\n    {}\n]\n", fmt::join(env_strs, "\n    ")).no_line();
             }
 
@@ -690,7 +684,8 @@ class Matcher {
                     chk->loc,
                     "Expands to: {}",
                     re->substitute_vars(env)
-                ).no_line();
+                )
+                    .no_line();
 
                 /// Separate from the note after it.
                 fmt::print(stderr, "\n");
@@ -723,7 +718,7 @@ class Matcher {
                 Stream s{line};
                 auto name = s.read_to_ws(true);
                 auto value = *s.skip_ws();
-                Define(name, value);
+                Define(name, value, false);
             } break;
 
             case Directive::Undefine: {
@@ -969,6 +964,61 @@ int Context::Run() {
         const auto loc = LocationIn(value, check_file);
         const auto Add = [&](auto&& val, Directive d) { checks.emplace_back(d, std::forward<decltype(val)>(val), loc); };
 
+        /// Helper to apply the 'p nocap' and 'p lit' pragmas to a string.
+        auto SubstituteNoCapAndLiterals = [&](std::string& expr) {
+            /// If someone is using 'p (no)lit' on '()', then that’s
+            /// their problem; we warn about that already, so don’t
+            /// bother checking that and just handle 'p nocap' here.
+            ///
+            /// Furthermore, ignore unmatched parens as the regex
+            /// engine will error over that anyway.
+            if (pragmas["nocap"]) {
+                /// We need to 1. not escape '(' and ')' if the '('
+                /// is followed by '?', and 2. make sure we match
+                /// the closing ')' correctly.
+                usz i = 0;
+                auto Escape = [&]<bool top_level = false>(auto& Self) {
+                    while (i < expr.size()) {
+                        /// Skip to next open paren, or closing paren, if
+                        /// we’ve seen an open paren.
+                        i = top_level ? expr.find('(', i) : expr.find_first_of("()", i);
+                        if (i == std::string::npos) return;
+
+                        /// Return on closing paren. Our caller will handle this.
+                        if (not top_level and expr[i] == ')') return;
+
+                        /// If we’re at the end or the next character is a '?',
+                        /// then move on to the next paren.
+                        if (i == expr.size() - 1 or expr[i + 1] == '?') {
+                            i++;
+                            continue;
+                        }
+
+                        /// Otherwise, escape the paren, recurse to take care of
+                        /// nested parens, and escape the corresponding closing
+                        /// paren, if there is one.
+                        expr.insert(i, "\\");
+                        i += "\\("sv.size();
+                        Self(Self);
+                        if (i < expr.size() and expr[i] == ')') {
+                            expr.insert(i, "\\");
+                            i += "\\)"sv.size();
+                        }
+                    }
+                };
+
+                /// Yes, this is how you call a templated lambda.
+                Escape.template operator()<true>(Escape);
+            }
+
+            /// Escape dots if the corresponding pragma is set.
+            for (auto c : literal_chars) utils::ReplaceAll(
+                expr,
+                std::string_view{&c, 1},
+                fmt::format("\\{}", c)
+            );
+        };
+
         /// Note: Below, we access pragmas w/ [], which ends up creating
         /// an entry in the map if it doesn’t exist yet; however, since a
         /// default-constructed `bool` is `false`, this ends up working
@@ -981,7 +1031,6 @@ int Context::Run() {
             case Directive::InternalCheckNotEmpty:
                 Unreachable();
 
-            case Directive::Define:
             case Directive::Undefine:
             _default:
                 Add(Stream{value}.fold_ws(), d);
@@ -1017,6 +1066,13 @@ int Context::Run() {
                     goto _default;
                 }
                 break;
+
+            /// Value of a define must honour literals at definition time.
+            case Directive::Define: {
+                auto text = Stream{value}.fold_ws();
+                SubstituteNoCapAndLiterals(text);
+                Add(text, d);
+            } break;
 
             /// Handle pragmas.
             case Directive::Pragma: {
@@ -1126,58 +1182,7 @@ int Context::Run() {
                 /// trying to match anything with faulty regular expressions.
                 try {
                     auto expr = Stream{value}.fold_ws();
-
-                    /// If someone is using 'p (no)lit' on '()', then that’s
-                    /// their problem; we warn about that already, so don’t
-                    /// bother checking that and just handle 'p nocap' here.
-                    ///
-                    /// Furthermore, ignore unmatched parens as the regex
-                    /// engine will error over that anyway.
-                    if (pragmas["nocap"]) {
-                        /// We need to 1. not escape '(' and ')' if the '('
-                        /// is followed by '?', and 2. make sure we match
-                        /// the closing ')' correctly.
-                        usz i = 0;
-                        auto Escape = [&]<bool top_level = false>(auto& Self) {
-                            while (i < expr.size()) {
-                                /// Skip to next open paren, or closing paren, if
-                                /// we’ve seen an open paren.
-                                i = top_level ? expr.find('(', i) : expr.find_first_of("()", i);
-                                if (i == std::string::npos) return;
-
-                                /// Return on closing paren. Our caller will handle this.
-                                if (not top_level and expr[i] == ')') return;
-
-                                /// If we’re at the end or the next character is a '?',
-                                /// then move on to the next paren.
-                                if (i == expr.size() - 1 or expr[i + 1] == '?') {
-                                    i++;
-                                    continue;
-                                }
-
-                                /// Otherwise, escape the paren, recurse to take care of
-                                /// nested parens, and escape the corresponding closing
-                                /// paren, if there is one.
-                                expr.insert(i, "\\");
-                                i += "\\("sv.size();
-                                Self(Self);
-                                if (i < expr.size() and expr[i] == ')') {
-                                    expr.insert(i, "\\");
-                                    i += "\\)"sv.size();
-                                }
-                            }
-                        };
-
-                        /// Yes, this is how you call a templated lambda.
-                        Escape.template operator()<true>(Escape);
-                    }
-
-                    /// Escape dots if the corresponding pragma is set.
-                    for (auto c : literal_chars) utils::ReplaceAll(
-                        expr,
-                        std::string_view{&c, 1},
-                        fmt::format("\\{}", c)
-                    );
+                    SubstituteNoCapAndLiterals(expr);
 
                     /// Construct an environment regex if captures are used.
                     static constinit std::array<std::string_view, 3> delims{"?<"sv, R"(\k<)", "$"sv};
