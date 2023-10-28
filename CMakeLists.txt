@@ -201,16 +201,6 @@ file(
     ${CMAKE_CURRENT_BINARY_DIR}/libs/pcre2/*.h
 )
 
-## Disable for MSVC but enable it for clang-cl/
-if (NOT MSVC OR CMAKE_CXX_COMPILER_ID STREQUAL "Clang")
-    set_source_files_properties(
-        ${_fchk_pcre2_sources}
-        PROPERTIES
-        COMPILE_FLAGS "-w"
-    )
-endif()
-
-
 ## Link against libfmt.
 target_link_libraries(_fchk_options INTERFACE fmt pcre2-8)
 
