@@ -137,3 +137,11 @@ AAAAABAAAAA
 ## + baz.
 foo.bar
 baz.
+
+## A pragma can be turned off by writing 'p <pragma> off'
+##
+## p re off
+## * X
+## + \d\d\d
+X
+\d\d\d
