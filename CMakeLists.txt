@@ -5,7 +5,6 @@ project(fchk VERSION 0.1.0 LANGUAGES CXX)
 ##  Global CMake Variables.
 ## ============================================================================
 set(CMAKE_CXX_STANDARD 23)
-set(CMAKE_RUNTIME_OUTPUT_DIRECTORY ${PROJECT_SOURCE_DIR})
 set(CMAKE_CXX_STANDARD_REQUIRED ON)
 
 ## ============================================================================
@@ -30,11 +29,11 @@ endif()
 ## ============================================================================
 ##  Compiler options.
 ## ============================================================================
-add_library(options INTERFACE)
+add_library(_fchk_options INTERFACE)
 
 ## Flags for Clang and GCC.
 if (CMAKE_CXX_COMPILER_ID STREQUAL "GNU" OR CMAKE_CXX_COMPILER_ID STREQUAL "Clang")
-    target_compile_options(options INTERFACE
+    target_compile_options(_fchk_options INTERFACE
         ## Warnings.
         -Wall -Wextra     # Enable ‘all’ warnings.
         -Wundef           # Invalid #undef or undefined macro in #if.
@@ -78,7 +77,7 @@ endif()
 
 ## Additional flags for GCC.
 if (CMAKE_CXX_COMPILER_ID STREQUAL "GNU")
-    target_compile_options(options INTERFACE 
+    target_compile_options(_fchk_options INTERFACE
         -Wlogical-op      # Duplicate or unintended logical operators.
         -Werror=invalid-memory-model # For atomics.
         -Werror=maybe-uninitialized
@@ -89,7 +88,7 @@ endif()
 
 ## Additional flags for Clang.
 if (CMAKE_CXX_COMPILER_ID STREQUAL "Clang")
-    target_compile_options(options INTERFACE 
+    target_compile_options(_fchk_options INTERFACE
         -Werror=dangling 
         -Werror=return-stack-address
     )
@@ -97,7 +96,7 @@ endif()
 
 ## Flags for MSVC.
 if (CMAKE_CXX_COMPILER_ID STREQUAL "MSVC")
-    target_compile_options(options INTERFACE
+    target_compile_options(_fchk_options INTERFACE
         /W4 # Enable ‘all’ warnings.
 
         # Allow unnamed structs/unions.
@@ -110,7 +109,7 @@ endif()
 
 ## On Windows, don’t suggest the _s nonsense functions.
 if (WIN32)
-    target_compile_definitions(options INTERFACE
+    target_compile_definitions(_fchk_options INTERFACE
         _CRT_SECURE_NO_WARNINGS
         _CRT_SECURE_NO_WARNINGS_GLOBALS
         _CRT_NONSTDC_NO_WARNINGS
@@ -119,16 +118,16 @@ endif()
 
 ## Debug/Release flags.
 if (NOT MSVC)
-    target_compile_options(options INTERFACE
+    target_compile_options(_fchk_options INTERFACE
         $<$<CONFIG:DEBUG>:-O0 -g3 -ggdb3 -rdynamic>
         $<$<CONFIG:RELEASE>:-O3 -march=native>
     )
-    target_link_options(options INTERFACE
+    target_link_options(_fchk_options INTERFACE
         $<$<CONFIG:DEBUG>:-O0 -g3 -ggdb3 -rdynamic>
         $<$<CONFIG:RELEASE>:-O3 -march=native>
     )
 else()
-    target_compile_options(options INTERFACE
+    target_compile_options(_fchk_options INTERFACE
         $<$<CONFIG:DEBUG>:/Od>
         $<$<CONFIG:RELEASE>:/O2>
     )
@@ -177,14 +176,14 @@ FetchContent_Declare(pcre2
 FetchContent_MakeAvailable(pcre2)
 
 ## Link against libfmt.
-target_link_libraries(options INTERFACE fmt pcre2-8)
+target_link_libraries(_fchk_options INTERFACE fmt pcre2-8)
 
 ## ‘src’ should be an include directory.
-target_include_directories(options INTERFACE src)
+target_include_directories(_fchk_options INTERFACE src)
 
 ## ‘include’ too, if it exists.
 if (EXISTS ${PROJECT_SOURCE_DIR}/include)
-    target_include_directories(options INTERFACE include)
+    target_include_directories(_fchk_options INTERFACE include)
 endif()
 
 ## As well as everything in ‘libs’.
@@ -195,9 +194,9 @@ if (EXISTS ${PROJECT_SOURCE_DIR}/libs)
     ## directory if there is no include directory.
     foreach(lib ${libs})
         if (IS_DIRECTORY ${lib}/include)
-            target_include_directories(options INTERFACE ${lib}/include)
+            target_include_directories(_fchk_options INTERFACE ${lib}/include)
         else()
-            target_include_directories(options INTERFACE ${lib})
+            target_include_directories(_fchk_options INTERFACE ${lib})
         endif()
     endforeach()
 
@@ -213,19 +212,30 @@ endif()
 ##  Executables and libraries.
 ## ============================================================================
 ## Everything in ‘src’ is part of the project.
-file(GLOB_RECURSE sources src/*.cc src/*.hh)
+file(GLOB_RECURSE _fchk_sources src/*.cc src/*.hh)
 
 ## As well as everything in ‘include’, if it exists.
 if (EXISTS ${PROJECT_SOURCE_DIR}/include)
-    file(GLOB_RECURSE includes include/*.hh)
-    list(APPEND sources ${includes})
+    file(GLOB_RECURSE _fchk_includes include/*.hh)
+    list(APPEND _fchk_sources ${_fchk_includes})
 endif()
 
 ## Add the executable.
-add_executable(fchk ${sources})
+add_executable(fchk ${_fchk_sources})
 
 ## Project dir so we can strip it from diags.
 target_compile_options(fchk PRIVATE "-DFCHK_PROJECT_DIR_NAME=\"fchk\"")
 
 ## Apply our options.
-target_link_libraries(fchk PRIVATE options)
+target_link_libraries(fchk PRIVATE _fchk_options)
+
+## Automatically provide access to the test discovery feature.
+set(FCHK_EXE_PATH "${CMAKE_RUNTIME_OUTPUT_DIRECTORY}/fchk")
+include("${PROJECT_SOURCE_DIR}/cmake/FCHKDiscoverTests.cmake")
+
+## Test if it works.
+FCHKAddAllTestsInDir(
+    IN test
+    PATTERN *.txt
+    RECURSIVE
+)
