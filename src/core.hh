@@ -531,7 +531,7 @@ public:
     template <typename Predicate>
     [[nodiscard]] auto read_while(Predicate pred, bool discard = false) -> SV {
         usz pos = 0;
-        while (not text.empty() and pred(text[pos])) pos++;
+        while (not text.empty() and pos < text.size() and pred(text[pos])) pos++;
         return yield_until(pos, discard);
     }
 
