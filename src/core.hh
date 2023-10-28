@@ -262,6 +262,9 @@ class Context {
     /// Enabled pragmas.
     utils::Map<std::string, bool> pragmas;
 
+    /// Stop on an error.
+    bool abort_on_error;
+
     /// Error flag.
     mutable bool has_error = false;
     mutable bool has_diag = false;
@@ -275,10 +278,12 @@ public:
         std::string check,
         fs::path check_name,
         std::string prefix,
-        utils::Map<std::string, bool> pragmas
+        utils::Map<std::string, bool> pragmas,
+        bool abort_on_error
     ) : check_file{std::move(check), std::move(check_name)},
         prefix(std::move(prefix)),
-        pragmas(std::move(pragmas)) {}
+        pragmas(std::move(pragmas)),
+        abort_on_error(abort_on_error) {}
 
     /// Get the location of a string view in a file.
     ///

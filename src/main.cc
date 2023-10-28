@@ -5,6 +5,7 @@
 namespace detail {
 using namespace command_line_options;
 using options = clopts< // clang-format off
+    flag<"-a", "Abort on the first failed check">,
     option<"-p", "Check prefix to use", std::string>,
     multiple<option<"-P", "Set a pragma", std::string>>,
     positional<"checkfile", "File containing the check directives", file<>, true>,
@@ -28,6 +29,7 @@ int main(int argc, char** argv) {
         std::move(opts.get<"checkfile">()->path),
         opts.get_or<"-p">(""),
         std::move(pragmas),
+        opts.get<"-a">(),
     };
 
     return ctx.Run();

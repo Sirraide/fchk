@@ -831,6 +831,9 @@ class Matcher {
                 );
             }
 
+            /// Halt on error if requested.
+            if (ctx->has_error and ctx->abort_on_error) std::exit(1);
+
             /// Take care not to go out of bounds here.
             if (chk == ctx->checks.end()) return;
         }
