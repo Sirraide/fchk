@@ -689,6 +689,7 @@ class Matcher {
             /// These should no longer exist here.
             case Directive::Prefix:
             case Directive::Run:
+            case Directive::Pragma:
                 Unreachable();
 
             case Directive::Define: {
@@ -859,6 +860,7 @@ int Context::Run() {
         {DirectiveNames[+Directive::RegexCheckNot], Directive::RegexCheckNot},
         {DirectiveNames[+Directive::Define], Directive::Define},
         {DirectiveNames[+Directive::Undefine], Directive::Undefine},
+        {DirectiveNames[+Directive::Pragma], Directive::Pragma},
         {DirectiveNames[+Directive::Prefix], Directive::Prefix},
         {DirectiveNames[+Directive::Run], Directive::Run},
     };
@@ -881,6 +883,15 @@ int Context::Run() {
             DirectiveNames[+Directive::Prefix]
         );
     }
+
+    /// Pragmas.
+    utils::Map<std::string_view, bool> pragmas{
+        {"re", false},
+        {"litdot", false},
+    };
+
+    auto PragmaRe = [&] { return pragmas["re"]; };
+    auto PragmaLitDot = [&] { return pragmas["litdot"]; };
 
     /// Collect check directives.
     for (;;) {
@@ -933,7 +944,7 @@ int Context::Run() {
         }
 
         /// Add the check.
-        const auto d = it->second;
+        Directive d = it->second;
         const auto loc = LocationIn(value, check_file);
         const auto Add = [&](auto&& val, Directive d) { checks.emplace_back(d, std::forward<decltype(val)>(val), loc); };
         switch (it->second) {
@@ -953,31 +964,82 @@ int Context::Run() {
             /// Optimise for empty lines.
             case Directive::CheckAny:
                 if (value.empty()) Add(Check::Data{}, Directive::InternalCheckEmpty);
-                else goto _default;
+                else if (PragmaRe()) {
+                    d = Directive::RegexCheckAny;
+                    goto regex_directive;
+                } else {
+                    goto _default;
+                }
                 break;
 
             case Directive::CheckNext:
                 if (value.empty()) Add(Check::Data{}, Directive::InternalCheckNextEmpty);
-                else goto _default;
+                else if (PragmaRe()) {
+                    d = Directive::RegexCheckNext;
+                    goto regex_directive;
+                } else {
+                    goto _default;
+                }
                 break;
 
             case Directive::CheckNot:
                 if (value.empty()) Add(Check::Data{}, Directive::InternalCheckNotEmpty);
-                else goto _default;
+                else if (PragmaRe()) {
+                    d = Directive::RegexCheckNot;
+                    goto regex_directive;
+                } else {
+                    goto _default;
+                }
                 break;
+
+            /// Handle pragmas.
+            case Directive::Pragma: {
+                if (value.empty()) Diag::Fatal("'p' directive requires an argument");
+                auto s = Stream{value};
+                auto name = s.read_to_ws(true);
+
+                /// Pragmas take an optional ‘off’ parameter.
+                auto arg = s.skip_ws().read_to_ws(true);
+                if (not arg.empty() and arg != "off") Diag::Warning(
+                    this,
+                    LocationIn(arg, check_file),
+                    "Unknown pragma argument ignored"
+                );
+
+                /// Warn about junk.
+                if (not s.skip_ws().empty()) Diag::Warning(
+                    this,
+                    LocationIn(*s, check_file),
+                    "Junk at end of pragma ignored"
+                );
+
+                /// Ignore unknown pragmas.
+                auto p = pragmas.find(name);
+                if (p != pragmas.end()) p->second = arg != "off";
+                else Diag::Warning(
+                    this,
+                    LocationIn(name, check_file),
+                    "Unknown pragma ignored"
+                );
+            } break;
 
             /// Take care to handle regex directives.
             case Directive::RegexCheckAny:
             case Directive::RegexCheckNext:
-            case Directive::RegexCheckNot: {
+            case Directive::RegexCheckNot:
+            regex_directive: {
                 /// Regex constructor may throw so we don’t have to check for errors
                 /// everywhere we use a regular expression since there is no point in
                 /// trying to match anything with faulty regular expressions.
                 try {
+                    /// Escape dots if the corresponding pragma is set.
+                    auto expr = Stream{value}.fold_ws();
+                    if (PragmaLitDot()) utils::ReplaceAll(expr, ".", "\\.");
+
                     /// Construct an environment regex if captures are used.
                     static constinit std::array<std::string_view, 3> delims{"?<"sv, R"(\k<)", "$"sv};
-                    if (Stream{value}.skip_to_any(delims).size() >= 2) Add(EnvironmentRegex{Stream{value}.fold_ws()}, d);
-                    else Add(Regex{Stream{value}.fold_ws()}, d);
+                    if (Stream{value}.skip_to_any(delims).size() >= 2) Add(EnvironmentRegex{expr}, d);
+                    else Add(Regex{expr}, d);
                 } catch (const Regex::Exception& e) {
                     Diag::Error(
                         this,

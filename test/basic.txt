@@ -116,3 +116,24 @@ T
 ## re+ (?<tmp>\d+) - (?<foo>\d+) = $foo - $tmp
 foobarbaz
 42 - 43 = 43 - 42
+
+## Tried of writing `re` everywhere if you’re using a lot of
+## matches that involve regular expressions? You can use a pragma
+## or `p` directive to make `*`, `+`, `!` equivalent to `re*`, `re+`,
+## `re!` for the rest of the file.
+##
+## p re
+## * \d+
+## + (?<a>A+)B$a
+1234
+AAAAABAAAAA
+
+## There are several other pragmas, such as `p litdot` that makes
+## `.` match only a literal dot instead of any character, which can
+## be useful for matching code that contains lots of `.`s.
+##
+## p litdot
+## * foo.bar
+## + baz.
+foo.bar
+baz.

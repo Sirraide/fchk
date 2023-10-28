@@ -111,6 +111,7 @@ enum struct Directive {
     RegexCheckNot,
     Define,
     Undefine,
+    Pragma,
     Prefix,
     Run,
 
@@ -129,6 +130,7 @@ inline constexpr std::string_view DirectiveNames[]{
     "re!",
     "d",
     "u",
+    "p",
     "FCHK-PREFIX",
     "R",
 };
