@@ -274,10 +274,10 @@ public:
     Context(
         std::string check,
         fs::path check_name,
-        std::string_view prefix,
+        std::string prefix,
         utils::Map<std::string, bool> pragmas
     ) : check_file{std::move(check), std::move(check_name)},
-        prefix(prefix),
+        prefix(std::move(prefix)),
         pragmas(std::move(pragmas)) {}
 
     /// Get the location of a string view in a file.

@@ -119,6 +119,11 @@ if (WIN32)
     )
 endif()
 
+if (ENABLE_ASAN)
+    target_compile_options(_fchk_options INTERFACE -fsanitize=address)
+    target_link_options(_fchk_options INTERFACE -fsanitize=address)
+endif()
+
 ## Debug/Release flags.
 if (FCHK_FORCE_RELEASE)
     if (NOT MSVC)
