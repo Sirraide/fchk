@@ -164,7 +164,9 @@ bool Regex::match(std::string_view str, u32 flags = 0) const noexcept {
     return code >= 0;
 }
 
-EnvironmentRegex::EnvironmentRegex(std::string pattern) : re_str(std::move(pattern)) {
+EnvironmentRegex::EnvironmentRegex(std::string pattern, std::unordered_set<char> literal_chars)
+    : re_str(std::move(pattern)),
+      literal_chars(std::move(literal_chars)) {
     /// Find all captures defined by this pattern.
     Stream s{re_str};
     for (;;) {
@@ -172,89 +174,6 @@ EnvironmentRegex::EnvironmentRegex(std::string pattern) : re_str(std::move(patte
         if (s.empty()) break;
         defined_captures.emplace(group_name);
     }
-}
-
-bool EnvironmentRegex::match(
-    std::string_view str,
-    utils::StrMap& env,
-    u32 flags = 0,
-    std::function<void(std::string_view, std::string_view)> capture_visitor
-) const {
-    std::string subst;
-
-    /// Ensure defined captures don’t overwrite the ENV.
-    for (auto& c : defined_captures)
-        if (env.contains(c))
-            throw RedefError(c);
-
-    /// Substitute named captures that are not defined by this RE and
-    /// convert dollar-style captures that are to PCRE2-style '\k<name>'
-    /// captures.
-    for (Stream s{re_str};;) {
-        static constinit std::array<std::string_view, 2> delims{R"(\k<)", "$"sv};
-        static const auto IsCaptureGroupName = [](char c) { return std::isalnum(u8(c)) or c == '_'; };
-        const auto Add = [&](std::string_view capture, bool escape) {
-            if (auto idx = env.find(capture); idx != env.end()) {
-                if (not escape) subst += idx->second;
-                else subst += fmt::format("\\Q{}\\E", idx->second);
-            } else {
-                throw Regex::Exception("Undefined capture '{}'", capture);
-            }
-        };
-
-        /// Get start of next capture group.
-        auto fragment = s.read_to_any(delims, true);
-        subst += fragment;
-
-        /// An '$' on its own is not a capture group, so we always need
-        /// at least two characters (the '$' and another character) for
-        /// this to be a capture.
-        if (s.size() < 2) break;
-
-        /// PCRE2-style '\k<name>' capture group.
-        if (s[0, 1] == "\\") {
-            s.skip(R"(\k<)"sv.size());
-            auto name = s.read_while(IsCaptureGroupName, true);
-            if (not defined_captures.contains(name)) Add(name, false);
-            s.skip(">"sv.size());
-        }
-
-        /// Dollar capture, w/ optional escaping.
-        else {
-            bool escape = false;
-            s.skip("$"sv.size());
-            if (s.at("$")) {
-                s.skip("$"sv.size());
-                escape = true;
-            }
-
-            auto name = s.read_while(IsCaptureGroupName, true);
-            if (defined_captures.contains(name)) subst += fmt::format("\\k<{}>", name);
-            else Add(name, escape);
-        }
-    }
-
-    /// Compile the RE and execute it.
-    Regex re{subst};
-    auto res = re.match(str, flags);
-    if (not res) return false;
-
-    /// If the RE matches, extract the captures.
-    auto data = reinterpret_cast<pcre2_match_data*>(re.data_ptr);
-    auto ov = pcre2_get_ovector_pointer(data);
-    for (const auto& name : defined_captures) {
-        auto code = pcre2_substring_number_from_name(
-            reinterpret_cast<pcre2_code*>(re.re_ptr),
-            reinterpret_cast<PCRE2_SPTR>(name.data())
-        );
-
-        if (code < 0) throw Regex::Exception("Failed to get capture index for '{}'", name);
-        auto start = ov[2 * code];
-        auto end = ov[2 * code + 1];
-        capture_visitor(name, str.substr(start, end - start));
-    }
-
-    return true;
 }
 
 /// ===========================================================================
@@ -626,6 +545,93 @@ class Matcher {
         chk = ctx.checks.begin();
     }
 
+    /// Match a regular expression that uses the environment.
+    bool MatchEnvRegex(EnvironmentRegex& re) {
+        std::string subst;
+
+        /// Ensure defined captures don’t overwrite the ENV.
+        for (auto& c : re.defined_captures)
+            if (env.contains(c))
+                throw RedefError(c);
+
+        /// Substitute named captures that are not defined by this RE and
+        /// convert dollar-style captures that are to PCRE2-style '\k<name>'
+        /// captures.
+        for (Stream s{re.re_str};;) {
+            static constinit std::array<std::string_view, 2> delims{R"(\k<)", "$"sv};
+            static const auto IsCaptureGroupName = [](char c) { return std::isalnum(u8(c)) or c == '_'; };
+            const auto Add = [&](std::string_view capture, bool escape) {
+                if (auto idx = env.find(capture); idx != env.end()) {
+                    if (not escape) {
+                        /// Take care to escape the literals that were disabled
+                        /// when this regular expression was parsed.
+                        for (auto c : idx->second) {
+                            if (not re.literal_chars.contains(c)) subst += c;
+                            else subst += fmt::format("\\{}", c);
+                        }
+                    } else {
+                        subst += fmt::format("\\Q{}\\E", idx->second);
+                    }
+                } else {
+                    throw Regex::Exception("Undefined capture '{}'", capture);
+                }
+            };
+
+            /// Get start of next capture group.
+            auto fragment = s.read_to_any(delims, true);
+            subst += fragment;
+
+            /// An '$' on its own is not a capture group, so we always need
+            /// at least two characters (the '$' and another character) for
+            /// this to be a capture.
+            if (s.size() < 2) break;
+
+            /// PCRE2-style '\k<name>' capture group.
+            if (s[0, 1] == "\\") {
+                s.skip(R"(\k<)"sv.size());
+                auto name = s.read_while(IsCaptureGroupName, true);
+                if (not re.defined_captures.contains(name)) Add(name, false);
+                s.skip(">"sv.size());
+            }
+
+            /// Dollar capture, w/ optional escaping.
+            else {
+                bool escape = false;
+                s.skip("$"sv.size());
+                if (s.at("$")) {
+                    s.skip("$"sv.size());
+                    escape = true;
+                }
+
+                auto name = s.read_while(IsCaptureGroupName, true);
+                if (re.defined_captures.contains(name)) subst += fmt::format("\\k<{}>", name);
+                else Add(name, escape);
+            }
+        }
+
+        /// Compile the RE and execute it.
+        Regex expr{subst};
+        auto res = expr.match(in->text, 0);
+        if (not res) return false;
+
+        /// If the RE matches, extract the captures.
+        auto data = reinterpret_cast<pcre2_match_data*>(expr.data());
+        auto ov = pcre2_get_ovector_pointer(data);
+        for (const auto& name : re.defined_captures) {
+            auto code = pcre2_substring_number_from_name(
+                reinterpret_cast<pcre2_code*>(expr.ptr()),
+                reinterpret_cast<PCRE2_SPTR>(name.data())
+            );
+
+            if (code < 0) throw Regex::Exception("Failed to get capture index for '{}'", name);
+            auto start = ov[2 * code];
+            auto end = ov[2 * code + 1];
+            Define(name, in->text.substr(start, end - start));
+        }
+
+        return true;
+    }
+
     /// Advance the line and save the previous one.
     void NextLine() {
         prev = in;
@@ -634,10 +640,9 @@ class Matcher {
 
     /// Match a line.
     bool MatchLine() {
-        const auto DoDef = [&](auto a, auto b) { Define(a, b); };
         if (auto s = std::get_if<std::string>(&chk->data)) return in->text.contains(*s);
         else if (auto re = std::get_if<Regex>(&chk->data)) return re->match(in->text);
-        else return std::get<EnvironmentRegex>(chk->data).match(in->text, env, 0, DoDef);
+        else return MatchEnvRegex(std::get<EnvironmentRegex>(chk->data));
     };
 
     /// Skip a line that matches if the next directive is not a ! directive.
@@ -735,7 +740,8 @@ class Matcher {
             case Directive::CheckAny:
             case Directive::RegexCheckAny: {
                 /// Perform matching.
-                while (in != input_lines.end() and not MatchLine()) NextLine();
+                while (in != input_lines.end() and
+                    not MatchLine()) NextLine();
 
                 /// We couldn’t find a line that matches.
                 if (in == input_lines.end()) {
@@ -801,7 +807,7 @@ class Matcher {
                 }
 
                 else if (auto env_re = std::get_if<EnvironmentRegex>(&chk->data)) {
-                    if (env_re->match(in->text, env, 0, [&](auto a, auto b) { Define(a, b); })) {
+                    if (MatchEnvRegex(*env_re)) {
                         PrintRegexError("Input contains prohibited string");
                         context.print("In this line");
                     }
@@ -887,11 +893,6 @@ int Context::Run() {
         );
     }
 
-    /// This will insert a pragma if it doesn’t exist yet, but
-    /// since a default-constructed `bool` is `false`, this ends
-    /// up working as intended.
-    auto PragmaRe = [&] { return pragmas["re"]; };
-
     /// Collect check directives.
     for (;;) {
         /// Read directive.
@@ -942,10 +943,16 @@ int Context::Run() {
             continue;
         }
 
-        /// Add the check.
+
+        /// Helper to abbreviate adding a check.
         Directive d = it->second;
         const auto loc = LocationIn(value, check_file);
         const auto Add = [&](auto&& val, Directive d) { checks.emplace_back(d, std::forward<decltype(val)>(val), loc); };
+
+        /// Note: Below, we access pragmas w/ [], which ends up creating
+        /// an entry in the map if it doesn’t exist yet; however, since a
+        /// default-constructed `bool` is `false`, this ends up working
+        /// as intended.
         switch (it->second) {
             case Directive::Prefix:
             case Directive::Run:
@@ -963,7 +970,7 @@ int Context::Run() {
             /// Optimise for empty lines.
             case Directive::CheckAny:
                 if (value.empty()) Add(Check::Data{}, Directive::InternalCheckEmpty);
-                else if (PragmaRe()) {
+                else if (pragmas["re"]) {
                     d = Directive::RegexCheckAny;
                     goto regex_directive;
                 } else {
@@ -973,7 +980,7 @@ int Context::Run() {
 
             case Directive::CheckNext:
                 if (value.empty()) Add(Check::Data{}, Directive::InternalCheckNextEmpty);
-                else if (PragmaRe()) {
+                else if (pragmas["re"]) {
                     d = Directive::RegexCheckNext;
                     goto regex_directive;
                 } else {
@@ -983,7 +990,7 @@ int Context::Run() {
 
             case Directive::CheckNot:
                 if (value.empty()) Add(Check::Data{}, Directive::InternalCheckNotEmpty);
-                else if (PragmaRe()) {
+                else if (pragmas["re"]) {
                     d = Directive::RegexCheckNot;
                     goto regex_directive;
                 } else {
@@ -1012,6 +1019,14 @@ int Context::Run() {
                         continue;
                     }
 
+                    /// Making backslashes literal would break things.
+                    if (name == "lit" and arg.contains('\\')) Diag::Error(
+                        this,
+                        LocationIn(arg, check_file),
+                        "Escape character '\\' cannot be made literal",
+                        name
+                    );
+
                     /// Tell the user that `off` isn’t supported for this pragma. Since
                     /// 'o' and 'f' are not metacharacters anyway, passing 'off' to this
                     /// wouldn’t to anything even if we accepted it.
@@ -1028,8 +1043,17 @@ int Context::Run() {
                     }
 
                     /// Add/remove the literal chars.
-                    if (name == "lit") literal_chars.insert(arg.begin(), arg.end());
-                    else std::erase_if(literal_chars, [&](auto c) { return arg.contains(c); });
+                    if (name == "lit") {
+                        /// We don’t error on making 'Q' or 'E' literal, but since '\Q'
+                        /// and '\E' are used for escaping, they themselves should not
+                        /// be escaped, ever. To simplify things, we just ignore letters
+                        /// and numbers altogether here.
+                        for (auto c : arg)
+                            if (not std::isalnum(u8(c)))
+                                literal_chars.insert(c);
+                    } else {
+                        std::erase_if(literal_chars, [&](auto c) { return arg.contains(c); });
+                    }
                 }
 
                 /// Other pragmas are simple boolean flags.
@@ -1083,7 +1107,7 @@ int Context::Run() {
 
                     /// Construct an environment regex if captures are used.
                     static constinit std::array<std::string_view, 3> delims{"?<"sv, R"(\k<)", "$"sv};
-                    if (Stream{value}.skip_to_any(delims).size() >= 2) Add(EnvironmentRegex{expr}, d);
+                    if (Stream{value}.skip_to_any(delims).size() >= 2) Add(EnvironmentRegex{expr, literal_chars}, d);
                     else Add(Regex{expr}, d);
                 } catch (const Regex::Exception& e) {
                     Diag::Error(

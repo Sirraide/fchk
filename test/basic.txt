@@ -128,6 +128,14 @@ foobarbaz
 1234
 AAAAABAAAAA
 
+## A pragma can be turned off by writing 'p <pragma> off'
+##
+## p re off
+## * X
+## + \d\d\d
+X
+\d\d\d
+
 ## Sometimes, you end up having to match text that just so happens to
 ## contain characters that have special meaning in regular expressions.
 ## If you don’t need those characters, you can disable them with the
@@ -147,11 +155,3 @@ AAAAABAAAAA
 foo.bar
 baz^^.^^
 foo
-
-## A pragma can be turned off by writing 'p <pragma> off'
-##
-## p re off
-## * X
-## + \d\d\d
-X
-\d\d\d

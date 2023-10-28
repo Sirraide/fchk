@@ -135,12 +135,10 @@ inline constexpr std::string_view DirectiveNames[]{
     "R",
 };
 
-class EnvironmentRegex;
 class Regex {
     void* re_ptr{};
     void* data_ptr{};
 
-    friend EnvironmentRegex;
 protected:
     Regex(void* re_ptr, void* data_ptr) noexcept
         : re_ptr(re_ptr), data_ptr(data_ptr) {}
@@ -190,46 +188,26 @@ public:
     /// \param flags Flags to pass to the regex engine.
     /// \return Whether the match succeeded.
     bool match(std::string_view str, u32 flags) const noexcept;
+
+    /// Get match data pointer.
+    [[nodiscard]] auto data() const noexcept -> void* { return data_ptr; }
+
+    /// Get regular expression pointer.
+    [[nodiscard]] auto ptr() const noexcept -> void* { return re_ptr; }
 };
 
 /// Regular expression together with an environment. Prefer to
 /// use Regex over this if there are no named captures as it will
 /// be faster in the general case.
-class EnvironmentRegex {
+struct EnvironmentRegex {
     std::string re_str;
+    std::unordered_set<char> literal_chars;
     std::unordered_set<std::string, utils::StrHash, std::equal_to<>> defined_captures;
 
-public:
     /// Create a new regular expression.
     ///
     /// \param pattern The pattern to match.
-    EnvironmentRegex(std::string pattern);
-
-    /// Match the regular expression against a string.
-    ///
-    /// \param str The string to match.
-    /// \param env The environment to use and populate with captures.
-    /// \param flags Flags to pass to the regex engine.
-    /// \throw Regex::Exception if the pattern is invalid.
-    /// \return Whether the match succeeded.
-    bool operator()(std::string_view str, utils::StrMap& env, u32 flags) const {
-        return match(str, env, flags);
-    }
-
-    /// Match the regular expression against a string.
-    ///
-    /// \param str The string to match.
-    /// \param env The environment to use and populate with captures.
-    /// \param flags Flags to pass to the regex engine.
-    /// \param capture_visitor A visitor to invoke on each capture.
-    /// \throw Regex::Exception if the pattern is invalid.
-    /// \return Whether the match succeeded.
-    bool match(
-        std::string_view str,
-        utils::StrMap& env,
-        u32 flags,
-        std::function<void(std::string_view, std::string_view)> capture_visitor = {}
-    ) const;
+    EnvironmentRegex(std::string pattern, std::unordered_set<char> literal_chars);
 };
 
 /// A check that needs to be, well, checked.
@@ -287,6 +265,7 @@ public:
     ) : check_file{std::move(check), std::move(check_name)},
         prefix(std::move(prefix)),
         pragmas(std::move(pragmas)),
+        literal_chars(std::move(literal_chars)),
         abort_on_error(abort_on_error) {}
 
     /// Get the location of a string view in a file.
