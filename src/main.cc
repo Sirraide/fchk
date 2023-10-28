@@ -5,10 +5,11 @@
 namespace detail {
 using namespace command_line_options;
 using options = clopts< // clang-format off
-    flag<"-a", "Abort on the first failed check">,
     option<"-p", "Check prefix to use", std::string>,
     multiple<option<"-l", "Treat character(s) as literal">>,
     multiple<option<"-P", "Set a pragma", std::string>>,
+    flag<"-a", "Abort on the first failed check">,
+    flag<"-v", "Show more verbose error messages">,
     positional<"checkfile", "File containing the check directives", file<>, true>,
     help<>
 >; // clang-format on
@@ -38,6 +39,7 @@ int main(int argc, char** argv) {
         std::move(pragmas),
         std::move(literal_chars),
         opts.get<"-a">(),
+        opts.get<"-v">(),
     };
 
     return ctx.Run();

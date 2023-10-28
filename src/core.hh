@@ -136,12 +136,9 @@ inline constexpr std::string_view DirectiveNames[]{
 };
 
 class Regex {
+    std::string_view raw;
     void* re_ptr{};
     void* data_ptr{};
-
-protected:
-    Regex(void* re_ptr, void* data_ptr) noexcept
-        : re_ptr(re_ptr), data_ptr(data_ptr) {}
 
 public:
     struct Exception : std::exception {
@@ -194,6 +191,9 @@ public:
 
     /// Get regular expression pointer.
     [[nodiscard]] auto ptr() const noexcept -> void* { return re_ptr; }
+
+    /// Get raw text.
+    [[nodiscard]] auto raw_text() const noexcept -> std::string_view { return raw; }
 };
 
 /// Regular expression together with an environment. Prefer to
@@ -208,6 +208,9 @@ struct EnvironmentRegex {
     ///
     /// \param pattern The pattern to match.
     EnvironmentRegex(std::string pattern, std::unordered_set<char> literal_chars);
+
+    /// Substitute environment variables in the string.
+    auto substitute_vars(const utils::StrMap& env) -> std::string;
 };
 
 /// A check that needs to be, well, checked.
@@ -246,6 +249,9 @@ class Context {
     /// Stop on an error.
     bool abort_on_error;
 
+    /// Print verbose error messages.
+    bool verbose;
+
     /// Error flag.
     mutable bool has_error = false;
     mutable bool has_diag = false;
@@ -261,12 +267,14 @@ public:
         std::string prefix,
         utils::Map<std::string, bool> pragmas,
         std::unordered_set<char> literal_chars,
-        bool abort_on_error
+        bool abort_on_error,
+        bool verbose
     ) : check_file{std::move(check), std::move(check_name)},
         prefix(std::move(prefix)),
         pragmas(std::move(pragmas)),
         literal_chars(std::move(literal_chars)),
-        abort_on_error(abort_on_error) {}
+        abort_on_error(abort_on_error),
+        verbose(verbose) {}
 
     /// Get the location of a string view in a file.
     ///
