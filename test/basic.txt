@@ -128,15 +128,25 @@ foobarbaz
 1234
 AAAAABAAAAA
 
-## There are several other pragmas, such as `p litdot` that makes
-## `.` match only a literal dot instead of any character, which can
-## be useful for matching code that contains lots of `.`s.
+## Sometimes, you end up having to match text that just so happens to
+## contain characters that have special meaning in regular expressions.
+## If you don’t need those characters, you can disable them with the
+## `p lit` pragma.
 ##
-## p litdot
+## This pragma takes a parameter, which is a string of characters that
+## should be treated as literal characters. To stop treating characters
+## as literal, use the `p nolit` pragma, which takes the same parameter.
+##
+## Unlike other pragmas, these two never take an `off` parameter.
+##
+## p lit .^
 ## * foo.bar
-## + baz.
+## + baz^^.^^
+## p nolit ^
+## + ^foo
 foo.bar
-baz.
+baz^^.^^
+foo
 
 ## A pragma can be turned off by writing 'p <pragma> off'
 ##

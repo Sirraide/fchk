@@ -262,6 +262,9 @@ class Context {
     /// Enabled pragmas.
     utils::Map<std::string, bool> pragmas;
 
+    /// Characters to be treated as literal in regexes.
+    std::unordered_set<char> literal_chars;
+
     /// Stop on an error.
     bool abort_on_error;
 
@@ -279,6 +282,7 @@ public:
         fs::path check_name,
         std::string prefix,
         utils::Map<std::string, bool> pragmas,
+        std::unordered_set<char> literal_chars,
         bool abort_on_error
     ) : check_file{std::move(check), std::move(check_name)},
         prefix(std::move(prefix)),

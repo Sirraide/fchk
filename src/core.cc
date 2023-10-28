@@ -891,7 +891,6 @@ int Context::Run() {
     /// since a default-constructed `bool` is `false`, this ends
     /// up working as intended.
     auto PragmaRe = [&] { return pragmas["re"]; };
-    auto PragmaLitDot = [&] { return pragmas["litdot"]; };
 
     /// Collect check directives.
     for (;;) {
@@ -997,29 +996,71 @@ int Context::Run() {
                 if (value.empty()) Diag::Fatal("'p' directive requires an argument");
                 auto s = Stream{value};
                 auto name = s.read_to_ws(true);
-
-                /// Pragmas take an optional ‘off’ parameter.
                 auto arg = s.skip_ws().read_to_ws(true);
-                if (not arg.empty() and arg != "off") Diag::Warning(
-                    this,
-                    LocationIn(arg, check_file),
-                    "Unknown pragma argument ignored"
-                );
+
+                /// Some pragmas require special handling.
+                if (name == "lit" or name == "nolit") {
+                    /// No-op if no chars were provided
+                    if (arg.empty()) {
+                        Diag::Warning(
+                            this,
+                            LocationIn(arg, check_file),
+                            "Empty '{}' pragma ignored",
+                            name
+                        );
+
+                        continue;
+                    }
+
+                    /// Tell the user that `off` isn’t supported for this pragma. Since
+                    /// 'o' and 'f' are not metacharacters anyway, passing 'off' to this
+                    /// wouldn’t to anything even if we accepted it.
+                    if (arg == "off") {
+                        Diag::Warning(
+                            this,
+                            LocationIn(arg, check_file),
+                            "Syntax of '{}' pragma is 'p {} <chars>'",
+                            name,
+                            name
+                        );
+
+                        continue;
+                    }
+
+                    /// Add/remove the literal chars.
+                    if (name == "lit") literal_chars.insert(arg.begin(), arg.end());
+                    else std::erase_if(literal_chars, [&](auto c) { return arg.contains(c); });
+                }
+
+                /// Other pragmas are simple boolean flags.
+                else {
+                    /// Ignore unknown pragmas.
+                    if (not pragmas.contains(name)) {
+                        Diag::Warning(
+                            this,
+                            LocationIn(name, check_file),
+                            "Unknown pragma ignored"
+                        );
+
+                        continue;
+                    }
+
+                    /// Pragmas take an optional ‘off’ parameter.
+                    if (not arg.empty() and arg != "off") Diag::Warning(
+                        this,
+                        LocationIn(arg, check_file),
+                        "Unknown pragma argument ignored"
+                    );
+
+                    /// Set the pragma.
+                    pragmas[std::string{name}] = arg != "off";
+                }
 
                 /// Warn about junk.
                 if (not s.skip_ws().empty()) Diag::Warning(
                     this,
                     LocationIn(*s, check_file),
                     "Junk at end of pragma ignored"
-                );
-
-                /// Ignore unknown pragmas.
-                auto p = pragmas.find(name);
-                if (p != pragmas.end()) p->second = arg != "off";
-                else Diag::Warning(
-                    this,
-                    LocationIn(name, check_file),
-                    "Unknown pragma ignored"
                 );
             } break;
 
@@ -1034,7 +1075,11 @@ int Context::Run() {
                 try {
                     /// Escape dots if the corresponding pragma is set.
                     auto expr = Stream{value}.fold_ws();
-                    if (PragmaLitDot()) utils::ReplaceAll(expr, ".", "\\.");
+                    for (auto c : literal_chars) utils::ReplaceAll(
+                        expr,
+                        std::string_view{&c, 1},
+                        fmt::format("\\{}", c)
+                    );
 
                     /// Construct an environment regex if captures are used.
                     static constinit std::array<std::string_view, 3> delims{"?<"sv, R"(\k<)", "$"sv};
