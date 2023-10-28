@@ -21,7 +21,9 @@ endif()
 if (CMAKE_CXX_COMPILER_ID STREQUAL "GNU" OR CMAKE_CXX_COMPILER_ID STREQUAL "Clang")
     find_program(MOLD_LINKER "mold")
     if (MOLD_LINKER)
-        add_compile_options(-fuse-ld=mold)
+        if (CMAKE_CXX_COMPILER_ID STREQUAL "GNU")
+            add_compile_options(-fuse-ld=mold)
+        endif()
         add_link_options(-fuse-ld=mold)
     endif()
 endif()
@@ -135,7 +137,7 @@ if (FCHK_FORCE_RELEASE)
 else()
     if (NOT MSVC)
         target_compile_options(_fchk_options INTERFACE
-            $<$<CONFIG:DEBUG>:-O0 -g3 -ggdb3 -rdynamic>
+            $<$<CONFIG:DEBUG>:-O0 -g3 -ggdb3>
             $<$<CONFIG:RELEASE>:-O3 -march=native>
         )
         target_link_options(_fchk_options INTERFACE
@@ -191,6 +193,22 @@ FetchContent_Declare(pcre2
     SOURCE_DIR "${CMAKE_CURRENT_BINARY_DIR}/libs/pcre2"
 )
 FetchContent_MakeAvailable(pcre2)
+
+## Suppress warnings for PCRE, otherwise there will be a lot of them
+file(
+    GLOB_RECURSE _fchk_pcre2_sources
+    ${CMAKE_CURRENT_BINARY_DIR}/libs/pcre2/*.c
+    ${CMAKE_CURRENT_BINARY_DIR}/libs/pcre2/*.h
+)
+
+if (NOT MSVC AND NOT CMAKE_CXX_COMPILER_ID STREQUAL "Clang")
+    set_source_files_properties(
+        ${_fchk_pcre2_sources}
+        PROPERTIES
+        COMPILE_FLAGS "-w"
+    )
+endif()
+
 
 ## Link against libfmt.
 target_link_libraries(_fchk_options INTERFACE fmt pcre2-8)
