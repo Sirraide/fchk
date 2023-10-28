@@ -8,7 +8,9 @@ set(FCHK_EXE_PATH "fchk" CACHE FILEPATH "Path to the fchk executable" )
 ## Arguments:
 ##   IN: One or more directories containing tests.
 ##   PATTERN: A glob pattern to match test files.
-##   PREFIX: A prefix to add to the test name. Empty by default.
+##   PREFIX: FHCK prefix to use. If empty, tests must define a prefix themselves.
+##   TEST_NAME_PREFIX: A prefix to add to the test name. Empty by default.
+##   WORKING_DIRECTORY: The working directory to use for the test.
 ##   RECURSIVE: If set, recurse into subdirectories.
 ##
 ## Example:
@@ -19,9 +21,10 @@ set(FCHK_EXE_PATH "fchk" CACHE FILEPATH "Path to the fchk executable" )
 ##   )
 function(FCHKAddAllTestsInDir)
     set(FCHKAddAllTestsInDir_PREFIX "")
+    set(FCHKAddAllTestsInDir_WORKING_DIRECTORY "${CMAKE_BINARY_DIR}")
 
     set(options RECURSIVE)
-    set(oneValueArgs PREFIX)
+    set(oneValueArgs TEST_NAME_PREFIX PREFIX WORKING_DIRECTORY)
     set(multiValueArgs IN PATTERN)
     cmake_parse_arguments(FCHKAddAllTestsInDir
         "${options}"
@@ -30,13 +33,19 @@ function(FCHKAddAllTestsInDir)
         ${ARGN}
     )
 
+    set(fchk_prefix "")
+    if (FCHKAddAllTestsInDir_PREFIX)
+        set(fchk_prefix -p ${FCHKAddAllTestsInDir_PREFIX})
+    endif()
+
     foreach (dir ${FCHKAddAllTestsInDir_IN})
         foreach (pat ${FCHKAddAllTestsInDir_PATTERN})
             file(GLOB_RECURSE tests "${dir}/${pat}")
             foreach (test ${tests})
                 add_test(
-                    NAME "${FCHKAddAllTestsInDir_PREFIX}${test}"
-                    COMMAND ${FCHK_EXE_PATH} ${test}
+                    NAME "${FCHKAddAllTestsInDir_TEST_NAME_PREFIX}${test}"
+                    COMMAND ${FCHK_EXE_PATH} ${fchk_prefix} ${test}
+                    WORKING_DIRECTORY ${FCHKAddAllTestsInDir_WORKING_DIRECTORY}
                 )
             endforeach()
         endforeach()

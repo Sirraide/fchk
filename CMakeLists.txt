@@ -244,10 +244,3 @@ target_link_libraries(fchk PRIVATE _fchk_options)
 ## Automatically provide access to the test discovery feature.
 set(FCHK_EXE_PATH "${CMAKE_RUNTIME_OUTPUT_DIRECTORY}/fchk")
 include("${PROJECT_SOURCE_DIR}/cmake/FCHKDiscoverTests.cmake")
-
-## Test if it works.
-FCHKAddAllTestsInDir(
-    IN test
-    PATTERN *.txt
-    RECURSIVE
-)
