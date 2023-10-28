@@ -201,7 +201,8 @@ file(
     ${CMAKE_CURRENT_BINARY_DIR}/libs/pcre2/*.h
 )
 
-if (NOT MSVC AND NOT CMAKE_CXX_COMPILER_ID STREQUAL "Clang")
+## Disable for MSVC but enable it for clang-cl/
+if (NOT MSVC OR CMAKE_CXX_COMPILER_ID STREQUAL "Clang")
     set_source_files_properties(
         ${_fchk_pcre2_sources}
         PROPERTIES
