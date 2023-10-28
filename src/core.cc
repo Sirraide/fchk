@@ -149,7 +149,7 @@ Regex::Regex(std::string_view pattern) {
     data_ptr = pcre2_match_data_create_from_pattern(expr, nullptr);
 }
 
-bool Regex::match(std::string_view str, u32 flags = PCRE2_ANCHORED) const noexcept {
+bool Regex::match(std::string_view str, u32 flags = 0) const noexcept {
     auto re = reinterpret_cast<pcre2_code*>(re_ptr);
     auto data = reinterpret_cast<pcre2_match_data*>(data_ptr);
     int code = pcre2_match(
@@ -635,7 +635,7 @@ class Matcher {
     /// Match a line.
     bool MatchLine() {
         const auto DoDef = [&](auto a, auto b) { Define(a, b); };
-        if (auto s = std::get_if<std::string>(&chk->data)) return in->text.starts_with(*s);
+        if (auto s = std::get_if<std::string>(&chk->data)) return in->text.contains(*s);
         else if (auto re = std::get_if<Regex>(&chk->data)) return re->match(in->text);
         else return std::get<EnvironmentRegex>(chk->data).match(in->text, env, 0, DoDef);
     };
