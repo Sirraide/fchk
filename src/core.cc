@@ -741,7 +741,7 @@ class Matcher {
             case Directive::RegexCheckAny: {
                 /// Perform matching.
                 while (in != input_lines.end() and
-                    not MatchLine()) NextLine();
+                       not MatchLine()) NextLine();
 
                 /// We couldn’t find a line that matches.
                 if (in == input_lines.end()) {
@@ -943,7 +943,6 @@ int Context::Run() {
             continue;
         }
 
-
         /// Helper to abbreviate adding a check.
         Directive d = it->second;
         const auto loc = LocationIn(value, check_file);
@@ -1027,6 +1026,14 @@ int Context::Run() {
                         name
                     );
 
+                    /// Warn about '(' and ')'.
+                    if (arg.contains('(') or arg.contains(')')) Diag::Warning(
+                        this,
+                        LocationIn(arg, check_file),
+                        "Prefer using 'p nocap' over making '(' or ')' (not) literal "
+                        "as the latter can cause the regex engine to error."
+                    );
+
                     /// Tell the user that `off` isn’t supported for this pragma. Since
                     /// 'o' and 'f' are not metacharacters anyway, passing 'off' to this
                     /// wouldn’t to anything even if we accepted it.
@@ -1097,8 +1104,54 @@ int Context::Run() {
                 /// everywhere we use a regular expression since there is no point in
                 /// trying to match anything with faulty regular expressions.
                 try {
-                    /// Escape dots if the corresponding pragma is set.
                     auto expr = Stream{value}.fold_ws();
+
+                    /// If someone is using 'p (no)lit' on '()', then that’s
+                    /// their problem; we warn about that already, so don’t
+                    /// bother checking that and just handle 'p nocap' here.
+                    ///
+                    /// Furthermore, ignore unmatched parens as the regex
+                    /// engine will error over that anyway.
+                    if (pragmas["nocap"]) {
+                        /// We need to 1. not escape '(' and ')' if the '('
+                        /// is followed by '?', and 2. make sure we match
+                        /// the closing ')' correctly.
+                        usz i = 0;
+                        auto Escape = [&]<bool top_level = false>(auto& Self) {
+                            while (i < expr.size()) {
+                                /// Skip to next open paren, or closing paren, if
+                                /// we’ve seen an open paren.
+                                i = top_level ? expr.find('(', i) : expr.find_first_of("()", i);
+                                if (i == std::string::npos) return;
+
+                                /// Return on closing paren. Our caller will handle this.
+                                if (not top_level and expr[i] == ')') return;
+
+                                /// If we’re at the end or the next character is a '?',
+                                /// then move on to the next paren.
+                                if (i == expr.size() - 1 or expr[i + 1] == '?') {
+                                    i++;
+                                    continue;
+                                }
+
+                                /// Otherwise, escape the paren, recurse to take care of
+                                /// nested parens, and escape the corresponding closing
+                                /// paren, if there is one.
+                                expr.insert(i, "\\");
+                                i += "\\("sv.size();
+                                Self(Self);
+                                if (i < expr.size() and expr[i] == ')') {
+                                    expr.insert(i, "\\");
+                                    i += "\\)"sv.size();
+                                }
+                            }
+                        };
+
+                        /// Yes, this is how you call a templated lambda.
+                        Escape.template operator()<true>(Escape);
+                    }
+
+                    /// Escape dots if the corresponding pragma is set.
                     for (auto c : literal_chars) utils::ReplaceAll(
                         expr,
                         std::string_view{&c, 1},

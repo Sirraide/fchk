@@ -148,10 +148,26 @@ X
 ## Unlike other pragmas, these two never take an `off` parameter.
 ##
 ## p lit .^
-## * foo.bar
-## + baz^^.^^
+## re* foo.bar
+## re+ baz^^.^^
 ## p nolit ^
-## + ^foo
+## re+ ^foo
 foo.bar
 baz^^.^^
 foo
+
+
+## Programs tend to contain an awful lot of parentheses, and typically
+## you probably won’t really need capture groups as commonly as regular
+## parentheses, so the `p nocap` pragma can be used to disable capture
+## groups.
+##
+## Since named capture groups are still useful though, anything that
+## starts with `(?`, that is named and anonymous captures, as well as
+## lookahead and lookbehind, still work as expected.
+##
+## p nocap
+## * Y
+## re+ () (?:(test))
+Y
+() (test)

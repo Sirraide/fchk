@@ -475,7 +475,7 @@ public:
     ///
     /// If either position is out of bounds, it will be
     /// clamped to the nearest valid position.
-    [[nodiscard]] auto operator[](usz start, usz end = std::numeric_limits<usz>::max()) const -> SV;
+    [[nodiscard]] auto operator[](usz start, usz end) const -> SV;
 
     /// Get the entire text.
     [[nodiscard]] auto operator*() const -> SV { return text; }
