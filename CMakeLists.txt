@@ -31,6 +31,9 @@ endif()
 ## ============================================================================
 add_library(_fchk_options INTERFACE)
 
+## Allow the user to force building this in release mode.
+option(FCHK_FORCE_RELEASE "Force building fchk in release mode." OFF)
+
 ## Flags for Clang and GCC.
 if (CMAKE_CXX_COMPILER_ID STREQUAL "GNU" OR CMAKE_CXX_COMPILER_ID STREQUAL "Clang")
     target_compile_options(_fchk_options INTERFACE
@@ -117,20 +120,29 @@ if (WIN32)
 endif()
 
 ## Debug/Release flags.
-if (NOT MSVC)
-    target_compile_options(_fchk_options INTERFACE
-        $<$<CONFIG:DEBUG>:-O0 -g3 -ggdb3 -rdynamic>
-        $<$<CONFIG:RELEASE>:-O3 -march=native>
-    )
-    target_link_options(_fchk_options INTERFACE
-        $<$<CONFIG:DEBUG>:-O0 -g3 -ggdb3 -rdynamic>
-        $<$<CONFIG:RELEASE>:-O3 -march=native>
-    )
+if (FCHK_FORCE_RELEASE)
+    if (NOT MSVC)
+        target_compile_options(_fchk_options INTERFACE -O3 -march=native)
+        target_link_options(_fchk_options INTERFACE -O3 -march=native)
+    else()
+        target_compile_options(_fchk_options INTERFACE /O2)
+    endif()
 else()
-    target_compile_options(_fchk_options INTERFACE
-        $<$<CONFIG:DEBUG>:/Od>
-        $<$<CONFIG:RELEASE>:/O2>
-    )
+    if (NOT MSVC)
+        target_compile_options(_fchk_options INTERFACE
+            $<$<CONFIG:DEBUG>:-O0 -g3 -ggdb3 -rdynamic>
+            $<$<CONFIG:RELEASE>:-O3 -march=native>
+        )
+        target_link_options(_fchk_options INTERFACE
+            $<$<CONFIG:DEBUG>:-O0 -g3 -ggdb3 -rdynamic>
+            $<$<CONFIG:RELEASE>:-O3 -march=native>
+        )
+    else()
+        target_compile_options(_fchk_options INTERFACE
+            $<$<CONFIG:DEBUG>:/Od>
+            $<$<CONFIG:RELEASE>:/O2>
+        )
+    endif()
 endif()
 
 ## ============================================================================
