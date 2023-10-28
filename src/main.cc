@@ -6,6 +6,7 @@ namespace detail {
 using namespace command_line_options;
 using options = clopts< // clang-format off
     option<"-p", "Check prefix to use", std::string>,
+    multiple<option<"-P", "Set a pragma", std::string>>,
     positional<"checkfile", "File containing the check directives", file<>, true>,
     help<>
 >; // clang-format on
@@ -18,10 +19,15 @@ int main(int argc, char** argv) {
     if (auto pre = opts.get<"-p">(); pre and Trim(*pre).empty())
         Diag::Fatal("Prefix may not be empty");
 
+    /// Collect pragmas.
+    utils::Map<std::string, bool> pragmas;
+    for (auto v : *opts.get<"-P">()) pragmas[v] = true;
+
     Context ctx{
         std::move(opts.get<"checkfile">()->contents),
         std::move(opts.get<"checkfile">()->path),
         opts.get_or<"-p">(""),
+        std::move(pragmas),
     };
 
     return ctx.Run();

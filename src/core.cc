@@ -884,12 +884,9 @@ int Context::Run() {
         );
     }
 
-    /// Pragmas.
-    utils::Map<std::string_view, bool> pragmas{
-        {"re", false},
-        {"litdot", false},
-    };
-
+    /// This will insert a pragma if it doesn’t exist yet, but
+    /// since a default-constructed `bool` is `false`, this ends
+    /// up working as intended.
     auto PragmaRe = [&] { return pragmas["re"]; };
     auto PragmaLitDot = [&] { return pragmas["litdot"]; };
 

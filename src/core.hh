@@ -259,6 +259,9 @@ class Context {
     /// Directive prefix.
     std::string_view prefix;
 
+    /// Enabled pragmas.
+    utils::Map<std::string, bool> pragmas;
+
     /// Error flag.
     mutable bool has_error = false;
     mutable bool has_diag = false;
@@ -271,9 +274,11 @@ public:
     Context(
         std::string check,
         fs::path check_name,
-        std::string_view prefix = ""
+        std::string_view prefix,
+        utils::Map<std::string, bool> pragmas
     ) : check_file{std::move(check), std::move(check_name)},
-        prefix(prefix) {}
+        prefix(prefix),
+        pragmas(std::move(pragmas)) {}
 
     /// Get the location of a string view in a file.
     ///

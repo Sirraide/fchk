@@ -11,6 +11,7 @@ set(FCHK_EXE_PATH "fchk" CACHE FILEPATH "Path to the fchk executable" )
 ##   PREFIX: FHCK prefix to use. If empty, tests must define a prefix themselves.
 ##   TEST_NAME_PREFIX: A prefix to add to the test name. Empty by default.
 ##   WORKING_DIRECTORY: The working directory to use for the test.
+##   ARGS: Additional arguments to pass to fchk.
 ##   RECURSIVE: If set, recurse into subdirectories.
 ##
 ## Example:
@@ -25,7 +26,7 @@ function(FCHKAddAllTestsInDir)
 
     set(options RECURSIVE)
     set(oneValueArgs TEST_NAME_PREFIX PREFIX WORKING_DIRECTORY)
-    set(multiValueArgs IN PATTERN)
+    set(multiValueArgs IN PATTERN ARGS)
     cmake_parse_arguments(FCHKAddAllTestsInDir
         "${options}"
         "${oneValueArgs}"
@@ -44,7 +45,11 @@ function(FCHKAddAllTestsInDir)
             foreach (test ${tests})
                 add_test(
                     NAME "${FCHKAddAllTestsInDir_TEST_NAME_PREFIX}${test}"
-                    COMMAND ${FCHK_EXE_PATH} ${fchk_prefix} ${test}
+                    COMMAND
+                        ${FCHK_EXE_PATH}
+                        ${fchk_prefix}
+                        ${FCHKAddAllTestsInDir_ARGS}
+                        ${test}
                     WORKING_DIRECTORY ${FCHKAddAllTestsInDir_WORKING_DIRECTORY}
                 )
             endforeach()
