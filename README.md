@@ -15,6 +15,9 @@ can try modifying a few lines and running `fchk test/basic.txt` to see what happ
 
 To run the program, simply add some tests (and a `R` directive) to a file, and run `fchk` on it.
 
+This program runs on Linux and Windows, though it is mainly developed on Linux. MacOS should work
+but is untested. Building with MSVC is supported.
+
 ## Build
 This program uses CMake and requires an up-to-date C++23 compiler. Dependencies (fmtlib and PCRE2)
 are downloaded automatically. To build it, just add it as a subdirectory to your CMake project or
