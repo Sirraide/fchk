@@ -981,16 +981,33 @@ int Context::Run() {
                     while (i < expr.size()) {
                         /// Skip to next open paren, or closing paren, if
                         /// we’ve seen an open paren.
-                        i = top_level ? expr.find('(', i) : expr.find_first_of("()", i);
+                        i = expr.find_first_of("()", i);
                         if (i == std::string::npos) return;
 
-                        /// Return on closing paren. Our caller will handle this.
-                        if (not top_level and expr[i] == ')') return;
+                        /// At a closing paren, let ur caller handle this
+                        /// if we’re not at the top level; if we are, just
+                        /// escape it.
+                        if (expr[i] == ')') {
+                            if (not top_level) return;
+                            expr.insert(i, "\\");
+                            i += 2;
+                            continue;
+                        }
 
-                        /// If we’re at the end or the next character is a '?',
-                        /// then move on to the next paren.
-                        if (i == expr.size() - 1 or expr[i + 1] == '?') {
+                        /// Escape any opening parens at the end.
+                        if (i == expr.size() - 1) {
+                            expr.insert(i, "\\");
+                            i += "\\("sv.size();
+                            return;
+                        }
+
+                        /// If the next character is a '?', recurse to handle
+                        /// nested parens, and leave the matching closing paren
+                        /// as is.
+                        if (expr[i + 1] == '?') {
                             i++;
+                            Self(Self);
+                            if (i < expr.size() and expr[i] == ')') i++;
                             continue;
                         }
 

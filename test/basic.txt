@@ -189,6 +189,6 @@ Z
 ##
 ## p nocap
 ## * Y
-## re+ () (?:(test))
+## re+ () (?:(test)) ))((
 Y
-() (test)
+() (test) ))((
