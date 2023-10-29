@@ -7,8 +7,8 @@
 #include <pcre2.h>
 
 #ifdef _WIN32
-    #define NOMINMAX
-    #include <Windows.h>
+#    define NOMINMAX
+#    include <Windows.h>
 #endif
 
 auto utils::Drain(FILE* f) -> std::string {
@@ -139,7 +139,7 @@ auto GetProcessOutput(std::string_view cmd) -> std::string {
 #endif
 }
 
-}
+} // namespace
 
 /// ===========================================================================
 ///  Location
@@ -752,6 +752,7 @@ class Matcher {
         if (
             in == input_lines.end() or
             chk == ctx->checks.end() or
+            std::next(chk) == ctx->checks.end() or
             std::next(chk)->dir == Directive::CheckNot or
             std::next(chk)->dir == Directive::RegexCheckNot or
             std::next(chk)->dir == Directive::InternalCheckNotEmpty

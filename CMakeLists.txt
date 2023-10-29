@@ -138,6 +138,7 @@ if (FCHK_FORCE_RELEASE)
     endif()
 else()
     if (NOT MSVC)
+        target_compile_definitions(_fchk_options INTERFACE _GLIBCXX_DEBUG)
         target_compile_options(_fchk_options INTERFACE
             $<$<CONFIG:DEBUG>:-O0 -g3 -ggdb3>
             $<$<CONFIG:RELEASE>:-O3 -march=native>
