@@ -125,6 +125,9 @@ if (ENABLE_ASAN)
     target_link_options(_fchk_options INTERFACE -fsanitize=address)
 endif()
 
+if (MSVC)
+    target_compile_options(_fchk_options INTERFACE /Zc:preprocessor)
+endif()
 ## Debug/Release flags.
 if (FCHK_FORCE_RELEASE)
     if (NOT MSVC)
@@ -179,6 +182,7 @@ if (NOT HAVE_CLOPTS_HH)
 		SOURCE_DIR "${CMAKE_CURRENT_BINARY_DIR}/libs/clopts"
     )
 	FetchContent_MakeAvailable(clopts)
+    target_include_directories(_fchk_options INTERFACE "${CMAKE_CURRENT_BINARY_DIR}/libs/clopts/include")
 endif()
 
 ## Find PCRE2.
@@ -249,7 +253,7 @@ endif()
 add_executable(fchk ${_fchk_sources})
 
 ## Project dir so we can strip it from diags.
-target_compile_options(fchk PRIVATE "-DFCHK_PROJECT_DIR_NAME=\"fchk\"")
+target_compile_definitions(fchk PRIVATE FCHK_PROJECT_DIR_NAME="fchk")
 
 ## Apply our options.
 target_link_libraries(fchk PRIVATE _fchk_options)

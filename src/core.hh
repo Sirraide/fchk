@@ -6,6 +6,7 @@
 #include <utility>
 #include <utils.hh>
 #include <vector>
+#include <variant>
 
 class Context;
 
@@ -492,7 +493,7 @@ public:
     ///
     /// If either position is out of bounds, it will be
     /// clamped to the nearest valid position.
-    [[nodiscard]] auto operator[](usz start, usz end) const -> SV;
+    [[nodiscard]] auto substr(usz start, usz end) const -> SV;
 
     /// Get the entire text.
     [[nodiscard]] auto operator*() const -> SV { return text; }
@@ -512,6 +513,12 @@ public:
     /// Fold whitespace into a single space and trim
     /// leading and trailing spaces.
     auto fold_ws() const -> std::string;
+
+    /// Get the first character of the stream.
+    ///
+    /// \return The first character of the stream, or \0
+    /// if the stream is empty
+    [[nodiscard]] char front() { return empty() ? 0 : text.front(); }
 
     /// Read up to a delimiter.
     ///

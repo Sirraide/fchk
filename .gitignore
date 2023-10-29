@@ -1,6 +1,7 @@
 ## IDE and editor files.
 .idea/
 .vscode/
+.vs/
 .cache/
 
 ## Build files.

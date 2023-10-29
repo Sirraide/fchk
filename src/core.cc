@@ -6,6 +6,11 @@
 #define PCRE2_STATIC          1
 #include <pcre2.h>
 
+#ifdef _WIN32
+    #define NOMINMAX
+    #include <Windows.h>
+#endif
+
 auto utils::Drain(FILE* f) -> std::string {
     std::string contents;
     static constexpr usz bufsize = 4'096;
@@ -37,6 +42,103 @@ namespace {
 constexpr void TrimFront(std::string_view& sv) {
     while (not sv.empty() and utils::IsWhitespace(sv.front())) sv.remove_prefix(1);
 }
+
+#ifdef _WIN32
+/// Get error message from last error on Windows.
+auto GetWindowsError() -> std::string {
+    DWORD err = GetLastError();
+    LPSTR buffer{};
+    auto sz = FormatMessageA(
+        FORMAT_MESSAGE_ALLOCATE_BUFFER | FORMAT_MESSAGE_FROM_SYSTEM | FORMAT_MESSAGE_IGNORE_INSERTS,
+        nullptr,
+        err,
+        MAKELANGID(LANG_NEUTRAL, SUBLANG_DEFAULT),
+        reinterpret_cast<LPSTR>(&buffer),
+        0,
+        nullptr
+    );
+
+    if (sz == 0) return fmt::format("Unknown error {}", err);
+    std::string msg{buffer, sz};
+    LocalFree(buffer);
+    return msg;
+}
+#endif
+
+auto GetProcessOutput(std::string_view cmd) -> std::string {
+#ifndef _WIN32
+    auto pipe = ::popen(cmd.data(), "r");
+    if (not pipe) Diag::Fatal("Failed to run command '{}': {}", cmd, std::strerror(errno));
+    auto output = utils::Drain(pipe);
+    ::pclose(pipe);
+    return output;
+#else
+    HANDLE pipe_read{}, pipe_write{};
+    SECURITY_ATTRIBUTES sa{};
+    sa.nLength = sizeof(SECURITY_ATTRIBUTES);
+    sa.bInheritHandle = TRUE;
+    sa.lpSecurityDescriptor = nullptr;
+
+    /// Create the pipe
+    if (not CreatePipe(&pipe_read, &pipe_write, &sa, 0))
+        Diag::Fatal("Failed to create pipe: {}", GetWindowsError());
+
+    /// Create the child process.
+    STARTUPINFO si{};
+    PROCESS_INFORMATION pi{};
+    si.cb = sizeof(STARTUPINFO);
+    si.hStdError = pipe_write;
+    si.hStdOutput = pipe_write;
+    si.dwFlags |= STARTF_USESTDHANDLES;
+
+    auto command = fmt::format("cmd /c {}", cmd);
+    if (
+        not CreateProcess(
+            nullptr,
+            command.data(),
+            nullptr,
+            nullptr,
+            TRUE,
+            0,
+            nullptr,
+            nullptr,
+            &si,
+            &pi
+        )
+    ) Diag::Fatal("Failed to create process: {}", GetWindowsError());
+
+    /// Close the write end of the pipe.
+    CloseHandle(pipe_write);
+
+    /// Read the output.
+    std::string output;
+    for (;;) {
+        static constexpr usz bufsize = 4'096;
+        output.resize(output.size() + bufsize);
+        DWORD read{};
+        if (not ReadFile(pipe_read, output.data() + output.size() - bufsize, bufsize, &read, nullptr)) {
+            if (GetLastError() == ERROR_BROKEN_PIPE) break;
+            Diag::Fatal("Failed to read from pipe: {}", GetWindowsError());
+        }
+        if (read == 0) break;
+        output.resize(output.size() - (bufsize - read));
+    }
+
+    /// Close the read end of the pipe.
+    CloseHandle(pipe_read);
+
+    /// Wait for the process to exit.
+    WaitForSingleObject(pi.hProcess, INFINITE);
+
+    /// Close the process and thread handles.
+    CloseHandle(pi.hProcess);
+    CloseHandle(pi.hThread);
+
+    /// Done!
+    return output;
+#endif
+}
+
 }
 
 /// ===========================================================================
@@ -206,7 +308,7 @@ auto EnvironmentRegex::substitute_vars(const Environment& env) -> std::string {
         if (s.size() < 2) break;
 
         /// PCRE2-style '\k<name>' capture group.
-        if (s[0, 1] == "\\") {
+        if (s.front() == '\\') {
             s.skip(R"(\k<)"sv.size());
             auto name = s.read_while(IsCaptureGroupName, true);
             if (defined_captures.contains(name)) subst += fmt::format("\\k<{}>", name);
@@ -439,7 +541,7 @@ void Diag::print() {
 /// ===========================================================================
 ///  Stream
 /// ===========================================================================
-auto Stream::operator[](usz start, usz end) const -> SV {
+auto Stream::substr(usz start, usz end) const -> SV {
     start = std::min(start, text.size() - 1);
     end = std::min(end, text.size());
     return text.substr(start, end - start);
@@ -896,7 +998,7 @@ int Context::Run() {
     const bool have_command_line_prefix = not prefix.empty();
     if (not have_command_line_prefix) {
         prefix = Trim(
-            auto{chfile}
+            Stream{chfile}
                 .skip_to(DirectiveNames[+Directive::Prefix])
                 .skip_to_ws()
                 .skip_ws()
@@ -1237,9 +1339,6 @@ void Context::RunTest(std::string_view test) {
     utils::ReplaceAll(cmd, "%s", check_file.path.string());
 
     /// Run the command and get its output.
-    auto pipe = ::popen(cmd.c_str(), "r");
-    if (not pipe) Diag::Fatal("Failed to run command '{}': {}", cmd, std::strerror(errno));
-    File input_file{utils::Drain(pipe), "<input>"};
-    ::pclose(pipe);
+    File input_file{GetProcessOutput(cmd), "<input>"};
     detail::Matcher::Match(*this, input_file);
 }
