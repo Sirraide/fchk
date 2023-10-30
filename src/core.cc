@@ -1014,6 +1014,10 @@ int Context::Run() {
         );
     }
 
+    /// Initialise known pragmas.
+    if (not pragmas.contains("re")) pragmas["re"] = false;
+    if (not pragmas.contains("nocap")) pragmas["nocap"] = false;
+
     /// Collect check directives.
     for (;;) {
         /// Read directive.
@@ -1141,10 +1145,7 @@ int Context::Run() {
             );
         };
 
-        /// Note: Below, we access pragmas w/ [], which ends up creating
-        /// an entry in the map if it doesn’t exist yet; however, since a
-        /// default-constructed `bool` is `false`, this ends up working
-        /// as intended.
+        /// Handle directive.
         switch (it->second) {
             case Directive::Prefix:
             case Directive::Run:
