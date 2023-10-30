@@ -1366,8 +1366,8 @@ int Context::Run() {
 void Context::RunTest(std::string_view test) {
     /// Substitute occurrences of `%s` with the file name.
     auto cmd = std::string{test};
-    utils::ReplaceAll(cmd, "%s", check_file.path.string());
     for (auto& [n, v] : defintions) utils::ReplaceAll(cmd, n, v);
+    utils::ReplaceAll(cmd, "%s", check_file.path.string());
 
     /// Run the command and get its output.
     File input_file{GetProcessOutput(cmd), "<input>"};
