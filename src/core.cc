@@ -241,11 +241,13 @@ Regex::Regex(std::string_view pattern) {
         throw Exception("{}", std::move(buffer));
     }
 
+/*
     /// JIT-compile the RE, if possible.
     if (pcre2_jit_compile(expr, PCRE2_JIT_COMPLETE) != 0) {
         pcre2_code_free(expr);
         throw Exception("Failed to JIT compile regex");
     }
+*/
 
     raw = pattern;
     re_ptr = expr;
