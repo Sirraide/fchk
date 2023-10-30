@@ -164,12 +164,12 @@ include(FetchContent)
 find_package(fmt CONFIG)
 if (NOT fmt_FOUND)
 	message(STATUS "Fmtlib not found, downloading ...")
-	FetchContent_Declare(fmtlib
+	FetchContent_Declare(_fchk_fmtlib
 		GIT_REPOSITORY https://github.com/fmtlib/fmt.git
 		GIT_TAG 10.0.0
 		SOURCE_DIR "${CMAKE_CURRENT_BINARY_DIR}/libs/fmt"
     )
-	FetchContent_MakeAvailable(fmtlib)
+	FetchContent_MakeAvailable(_fchk_fmtlib)
 endif()
 
 ## Find clopts.
@@ -177,12 +177,12 @@ include(CheckIncludeFileCXX)
 check_include_file_cxx(clopts.hh HAVE_CLOPTS_HH)
 if (NOT HAVE_CLOPTS_HH)
 	message(STATUS "Clopts not found, downloading ...")
-	FetchContent_Declare(clopts
+	FetchContent_Declare(_fchk_clopts
 		GIT_REPOSITORY https://github.com/Sirraide/clopts.git
-		GIT_TAG v2.0.1
+		GIT_TAG v2.0.2
 		SOURCE_DIR "${CMAKE_CURRENT_BINARY_DIR}/libs/clopts"
     )
-	FetchContent_MakeAvailable(clopts)
+	FetchContent_MakeAvailable(_fchk_clopts)
     target_include_directories(_fchk_options INTERFACE "${CMAKE_CURRENT_BINARY_DIR}/libs/clopts/include")
 endif()
 
@@ -191,12 +191,12 @@ set(PCRE2_SUPPORT_JIT ON)
 set(PCRE2_BUILD_PCRE2GREP OFF)
 set(PCRE2_BUILD_TESTS OFF)
 message(STATUS "Downloading PCRE2 ...")
-FetchContent_Declare(pcre2
+FetchContent_Declare(_fchk_pcre2
     GIT_REPOSITORY https://github.com/PCRE2Project/pcre2
     GIT_TAG pcre2-10.42
     SOURCE_DIR "${CMAKE_CURRENT_BINARY_DIR}/libs/pcre2"
 )
-FetchContent_MakeAvailable(pcre2)
+FetchContent_MakeAvailable(_fchk_pcre2)
 
 ## Suppress warnings for PCRE, otherwise there will be a lot of them
 file(
