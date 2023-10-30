@@ -141,6 +141,32 @@ auto GetProcessOutput(std::string_view cmd) -> std::string {
 
 } // namespace
 
+Context::Context(
+    std::string check,
+    fs::path check_name,
+    std::string prefix,
+    utils::Map<std::string, bool> pragmas,
+    std::unordered_set<char> literal_chars,
+    std::span<const std::string> defines,
+    bool abort_on_error,
+    bool verbose
+) : check_file{std::move(check), std::move(check_name)},
+    prefix(std::move(prefix)),
+    pragmas(std::move(pragmas)),
+    literal_chars(std::move(literal_chars)),
+    abort_on_error(abort_on_error),
+    verbose(verbose) {
+    for (auto& d : defines) {
+        auto eq = d.find('=');
+        if (eq == std::string::npos) {
+            Diag::Fatal("Syntax of '-D' option is '-Dname=value'", d);
+            continue;
+        }
+
+        defintions["%" + d.substr(0, eq)] = d.substr(eq + 1);
+    }
+}
+
 /// ===========================================================================
 ///  Location
 /// ===========================================================================
@@ -241,13 +267,13 @@ Regex::Regex(std::string_view pattern) {
         throw Exception("{}", std::move(buffer));
     }
 
-/*
-    /// JIT-compile the RE, if possible.
-    if (pcre2_jit_compile(expr, PCRE2_JIT_COMPLETE) != 0) {
-        pcre2_code_free(expr);
-        throw Exception("Failed to JIT compile regex");
-    }
-*/
+    /*
+        /// JIT-compile the RE, if possible.
+        if (pcre2_jit_compile(expr, PCRE2_JIT_COMPLETE) != 0) {
+            pcre2_code_free(expr);
+            throw Exception("Failed to JIT compile regex");
+        }
+    */
 
     raw = pattern;
     re_ptr = expr;
@@ -1341,6 +1367,7 @@ void Context::RunTest(std::string_view test) {
     /// Substitute occurrences of `%s` with the file name.
     auto cmd = std::string{test};
     utils::ReplaceAll(cmd, "%s", check_file.path.string());
+    for (auto& [n, v] : defintions) utils::ReplaceAll(cmd, n, v);
 
     /// Run the command and get its output.
     File input_file{GetProcessOutput(cmd), "<input>"};

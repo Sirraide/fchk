@@ -5,8 +5,8 @@
 #include <unordered_set>
 #include <utility>
 #include <utils.hh>
-#include <vector>
 #include <variant>
+#include <vector>
 
 class Context;
 
@@ -256,6 +256,9 @@ class Context {
     /// Characters to be treated as literal in regexes.
     std::unordered_set<char> literal_chars;
 
+    /// Definitions for run directives.
+    utils::StrMap defintions;
+
     /// Stop on an error.
     bool abort_on_error;
 
@@ -277,14 +280,10 @@ public:
         std::string prefix,
         utils::Map<std::string, bool> pragmas,
         std::unordered_set<char> literal_chars,
+        std::span<const std::string> defines,
         bool abort_on_error,
         bool verbose
-    ) : check_file{std::move(check), std::move(check_name)},
-        prefix(std::move(prefix)),
-        pragmas(std::move(pragmas)),
-        literal_chars(std::move(literal_chars)),
-        abort_on_error(abort_on_error),
-        verbose(verbose) {}
+    );
 
     /// Get the location of a string view in a file.
     ///

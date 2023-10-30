@@ -5,9 +5,10 @@
 namespace detail {
 using namespace command_line_options;
 using options = clopts< // clang-format off
-    option<"-p", "Check prefix to use", std::string>,
+    option<"-p", "Check prefix to use">,
     multiple<option<"-l", "Treat character(s) as literal">>,
-    multiple<option<"-P", "Set a pragma", std::string>>,
+    multiple<option<"-P", "Set a pragma">>,
+    multiple<option<"-D", "Define a constant that can be used in 'R' directives">>,
     flag<"-a", "Abort on the first failed check">,
     flag<"-v", "Show more verbose error messages">,
     positional<"checkfile", "File containing the check directives", file<>, true>,
@@ -38,6 +39,7 @@ int main(int argc, char** argv) {
         opts.get_or<"-p">(""),
         std::move(pragmas),
         std::move(literal_chars),
+        *opts.get<"-D">(),
         opts.get<"-a">(),
         opts.get<"-v">(),
     };

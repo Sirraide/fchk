@@ -10,7 +10,14 @@
 ##
 ## FCHK-PREFIX ##
 
-## Run this command on this file before checking it.
+## Run this command on this file before checking it. You can also
+## use the '-D' command-line option to specify additional definitions
+## that can be used in 'R' directives. For example, setting
+## '-D cat=/usr/bin/cat' allows you to write `%cat` to refer to that
+## path in a 'R' directive (but not in other contexts).
+##
+## '%s' *always* designates the current file.
+##
 ## R sed /^#/d %s
 
 ## This text is ignored because it does not resemble a
