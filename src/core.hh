@@ -102,39 +102,72 @@ struct Location {
 };
 
 /// Directive prefixes. Do NOT reorder these without
-/// also updating the DirectiveNames array below.
-enum struct Directive {
+/// also updating the DirectiveToRegexDirective and
+/// DirectiveNames arrays below.
+enum struct Directive : u8 {
     CheckAny,
     CheckNext,
-    CheckNot,
+    CheckNotSame,
+    CheckNotAny,
+    CheckNotNext,
     RegexCheckAny,
     RegexCheckNext,
-    RegexCheckNot,
+    RegexCheckNotSame,
+    RegexCheckNotAny,
+    RegexCheckNotNext,
     Define,
     Undefine,
     Pragma,
     Prefix,
     Run,
-
-    /// These directives only exist internally.
-    InternalCheckEmpty,     ///< Match an empty line.
-    InternalCheckNextEmpty, ///< Match the next line as empty.
-    InternalCheckNotEmpty,  ///< Match the next line as not empty.
+    Count = Run
 };
 
-inline constexpr std::string_view DirectiveNames[]{
-    "*",
-    "+",
-    "!",
-    "re*",
-    "re+",
-    "re!",
-    "d",
-    "u",
-    "p",
-    "FCHK-PREFIX",
-    "R",
+inline constexpr std::array DirectiveToRegexDirective {
+    Directive::RegexCheckAny,
+    Directive::RegexCheckNext,
+    Directive::RegexCheckNotSame,
+    Directive::RegexCheckNotAny,
+    Directive::RegexCheckNotNext,
+    Directive::RegexCheckAny,
+    Directive::RegexCheckNext,
+    Directive::RegexCheckNotSame,
+    Directive::RegexCheckNotAny,
+    Directive::RegexCheckNotNext,
+    Directive::Define,
+    Directive::Undefine,
+    Directive::Pragma,
+    Directive::Prefix,
+    Directive::Run,
 };
+
+inline constexpr std::array DirectiveNames{
+    "*"sv,
+    "+"sv,
+    "!"sv,
+    "!*"sv,
+    "!+"sv,
+    "re*"sv,
+    "re+"sv,
+    "re!"sv,
+    "re!*"sv,
+    "re!+"sv,
+    "d"sv,
+    "u"sv,
+    "p"sv,
+    "FCHK-PREFIX"sv,
+    "R"sv,
+};
+
+static_assert(
+    DirectiveToRegexDirective.size() == +Directive::Count + 1,
+    "DirectiveToRegexDirective array is out of sync"
+);
+
+static_assert(
+    DirectiveNames.size() == +Directive::Count + 1,
+    "DirectiveNames array is out of sync"
+);
 
 class Regex {
     std::string_view raw;

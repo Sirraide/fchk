@@ -55,6 +55,25 @@ asdfghjkl
 ## re! [0-9]+
 foo bar
 
+## If you want to check that the next line, or any line starting
+## at the current line, does not match, use `!+` and `!*` (or their
+## regex equivalents `re!+` and `re!*`).
+##
+## Note that these directives advance the line pointer, whereas `!`
+## does not, which is why the example below passes: since the line
+## after 'orange' does not contain 'kumquat', but 'tomato', that
+## line is skipped. After that, the line pointer is at 'kumquat',
+## and no line in the file after that contains 'tom[a]to'.
+##
+## Try swapping the lines 'kumquat' and 'tomato' to see both fail.
+##
+## * orange
+## !+ kumquat
+## re!* tom[a]to
+orange
+tomato
+kumquat
+
 ## Named capture groups can be used in subsequent directives.
 ##
 ## Since it doesn’t make sense to have anything after a `$` in

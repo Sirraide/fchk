@@ -158,11 +158,7 @@ Context::Context(
     verbose(verbose) {
     for (auto& d : defines) {
         auto eq = d.find('=');
-        if (eq == std::string::npos) {
-            Diag::Fatal("Syntax of '-D' option is '-Dname=value'", d);
-            continue;
-        }
-
+        if (eq == std::string::npos) Diag::Fatal("Syntax of '-D' option is '-Dname=value'", d);
         defintions["%" + d.substr(0, eq)] = d.substr(eq + 1);
     }
 }
@@ -690,7 +686,7 @@ class Matcher {
     };
 
     Context* const ctx;
-    File& input_file;
+    [[maybe_unused]] File& input_file;
     std::vector<Line> input_lines;
     std::vector<Line>::iterator in, prev;
     std::vector<Check>::iterator chk;
@@ -700,6 +696,7 @@ class Matcher {
     struct LineContext {
         Matcher& m;
         decltype(in) it = m.in, prev = m.prev;
+
         void print(std::string_view msg) const {
             /// Print the message w/o the code line.
             Diag::Note(m.ctx, it->loc, "{}", msg).no_line();
@@ -717,6 +714,11 @@ class Matcher {
                 else fmt::print(stderr, "{}\n", line.text);
             }
         };
+
+        void restore() {
+            m.in = it;
+            m.prev = prev;
+        }
     };
 
     Matcher(Context& ctx, File& input_file) : ctx{&ctx}, input_file{input_file} {
@@ -775,15 +777,15 @@ class Matcher {
         else return MatchEnvRegex(std::get<EnvironmentRegex>(chk->data));
     };
 
-    /// Skip a line that matches if the next directive is not a ! directive.
-    void SkipMatchingLine() {
+    /// Skip a line if the next directive is not a directive
+    /// that does not advance the line pointer.
+    void AdvanceLineAfterCheck() {
         if (
             in == input_lines.end() or
             chk == ctx->checks.end() or
             std::next(chk) == ctx->checks.end() or
-            std::next(chk)->dir == Directive::CheckNot or
-            std::next(chk)->dir == Directive::RegexCheckNot or
-            std::next(chk)->dir == Directive::InternalCheckNotEmpty
+            std::next(chk)->dir == Directive::CheckNotSame or
+            std::next(chk)->dir == Directive::RegexCheckNotSame
         ) return;
         NextLine();
     }
@@ -800,7 +802,9 @@ class Matcher {
         if (
             chk->dir == Directive::RegexCheckAny or
             chk->dir == Directive::RegexCheckNext or
-            chk->dir == Directive::RegexCheckNot
+            chk->dir == Directive::RegexCheckNotSame or
+            chk->dir == Directive::RegexCheckNotAny or
+            chk->dir == Directive::RegexCheckNotNext
         ) {
             if (env.empty()) return;
             if (ctx->verbose) {
@@ -820,6 +824,23 @@ class Matcher {
 
                 /// Separate from the note after it.
                 fmt::print(stderr, "\n");
+            }
+        }
+    }
+
+    /// Check if we’re at any kind of CheckNext directive and skip
+    /// them; note that Match() will skip the current check anyway,
+    /// so keep skipping until the *next* directive is not a CheckNext
+    /// directive.
+    void SkipCheckNextDirs() {
+        while (chk < std::prev(ctx->checks.end())) {
+            switch (std::next(chk)->dir) {
+                default: return;
+                case Directive::CheckNext:
+                case Directive::RegexCheckNext:
+                case Directive::CheckNotNext:
+                case Directive::RegexCheckNotNext:
+                    chk++;
             }
         }
     }
@@ -859,36 +880,11 @@ class Matcher {
                 else Diag::Warning(ctx, chk->loc, "Variable '{}' is not defined", var);
             } break;
 
-            case Directive::InternalCheckEmpty: {
-                while (in != input_lines.end() and not in->text.empty()) NextLine();
-                if (in == input_lines.end()) {
-                    Diag::Error(ctx, chk->loc, "Expected empty line");
-                    context.print("Started matching here");
-                }
-            } break;
-
-            case Directive::InternalCheckNextEmpty: {
-                if (in->text.empty()) NextLine();
-                else {
-                    Diag::Error(ctx, chk->loc, "Expected next line to be empty");
-                    context.print("Here");
-                }
-            } break;
-
-            case Directive::InternalCheckNotEmpty: {
-                if (not in->text.empty()) NextLine();
-                else {
-                    Diag::Error(ctx, chk->loc, "Expected line to not be empty");
-                    context.print("Here");
-                }
-            } break;
-
             /// Check that any of the following lines matches.
             case Directive::CheckAny:
             case Directive::RegexCheckAny: {
                 /// Perform matching.
-                while (in != input_lines.end() and
-                       not MatchLine()) NextLine();
+                while (in != input_lines.end() and not MatchLine()) NextLine();
 
                 /// We couldn’t find a line that matches.
                 if (in == input_lines.end()) {
@@ -897,55 +893,68 @@ class Matcher {
                     return;
                 }
 
-                /// Skip the matching line.
-                SkipMatchingLine();
+                AdvanceLineAfterCheck();
+            } break;
+
+            /// Check that none of the following lines match.
+            case Directive::CheckNotAny:
+            case Directive::RegexCheckNotAny: {
+                /// We’ll have to read ahead to the end of the file, so
+                /// restore the context when we’re done with that and skip
+                /// just one line.
+                defer { context.restore(); };
+
+                /// Check that the string does not occur in the file.
+                while (in != input_lines.end() and not MatchLine()) NextLine();
+                if (in != input_lines.end()) {
+                    PrintRegexError("Input contains prohibited string");
+                    context.print("Started matching here");
+                }
+            } break;
+
+            /// Check that the next line does not match.
+            case Directive::CheckNotNext:
+            case Directive::RegexCheckNotNext: {
+                if (MatchLine()) {
+                    PrintRegexError("Input contains prohibited string");
+                    context.print("Here");
+
+                    /// Skip any CheckNext directives after this one since they might
+                    /// cause bogus errors if we’re already out of sync.
+                    SkipCheckNextDirs();
+                }
+
+                AdvanceLineAfterCheck();
             } break;
 
             /// Check that this line matches.
             case Directive::CheckNext:
             case Directive::RegexCheckNext: {
-                /// We may look ahead a few lines below so we can issue a better
-                /// error message; make sure to reset the state in case we do that.
-                const auto save = in;
-                defer {
-                    in = save;
-                    prev = in == input_lines.begin() ? in : std::prev(in);
-                    SkipMatchingLine();
-                };
-
                 /// This line must match.
                 if (not MatchLine()) {
-                    /// Try to see if one of the later lines matches.
-                    NextLine();
-                    while (in != input_lines.end() and not MatchLine()) NextLine();
-
-                    /// If the input was not on the next line, skip any CheckNext directives
-                    /// after this one since they might cause bogus errors if we’re already out
-                    /// of sync.
-                    if (in != input_lines.end()) {
-                        Diag::Error(ctx, chk->loc, "Line does not match expected string");
-                        while (chk != ctx->checks.end() and chk->dir == Directive::CheckNext) chk++;
-                    }
-
-                    /// If not, just print a generic error.
-                    else { PrintRegexError("Expected string not found in input"); }
-                    /// TODO: Print environment.
+                    PrintRegexError("Line does not match expected string");
                     context.print("Expected match here");
+
+                    /// Skip any CheckNext directives after this one since they might
+                    /// cause bogus errors if we’re already out of sync.
+                    SkipCheckNextDirs();
                 }
+
+                AdvanceLineAfterCheck();
             } break;
 
             /// Check that this line does not match.
-            case Directive::CheckNot: {
+            case Directive::CheckNotSame: {
                 if (in->text.contains(std::get<std::string>(chk->data))) {
                     Diag::Error(ctx, chk->loc, "Input contains prohibited string");
                     context.print("In this line");
                 }
 
-                SkipMatchingLine();
+                AdvanceLineAfterCheck();
             } break;
 
             /// Check that this line does not match a regular expression.
-            case Directive::RegexCheckNot: {
+            case Directive::RegexCheckNotSame: {
                 if (auto re = std::get_if<Regex>(&chk->data)) {
                     if (re->match(in->text, 0)) {
                         Diag::Error(ctx, chk->loc, "Input contains prohibited string");
@@ -961,7 +970,7 @@ class Matcher {
                 }
 
                 else {
-                    SkipMatchingLine();
+                    AdvanceLineAfterCheck();
                 }
             } break;
         }
@@ -1010,10 +1019,14 @@ int Context::Run() {
     static std::unordered_map<std::string_view, Directive> name_directive_map{
         {DirectiveNames[+Directive::CheckAny], Directive::CheckAny},
         {DirectiveNames[+Directive::CheckNext], Directive::CheckNext},
-        {DirectiveNames[+Directive::CheckNot], Directive::CheckNot},
+        {DirectiveNames[+Directive::CheckNotSame], Directive::CheckNotSame},
+        {DirectiveNames[+Directive::CheckNotAny], Directive::CheckNotAny},
+        {DirectiveNames[+Directive::CheckNotNext], Directive::CheckNotNext},
         {DirectiveNames[+Directive::RegexCheckAny], Directive::RegexCheckAny},
         {DirectiveNames[+Directive::RegexCheckNext], Directive::RegexCheckNext},
-        {DirectiveNames[+Directive::RegexCheckNot], Directive::RegexCheckNot},
+        {DirectiveNames[+Directive::RegexCheckNotSame], Directive::RegexCheckNotSame},
+        {DirectiveNames[+Directive::RegexCheckNotAny], Directive::RegexCheckNotAny},
+        {DirectiveNames[+Directive::RegexCheckNotNext], Directive::RegexCheckNotNext},
         {DirectiveNames[+Directive::Define], Directive::Define},
         {DirectiveNames[+Directive::Undefine], Directive::Undefine},
         {DirectiveNames[+Directive::Pragma], Directive::Pragma},
@@ -1175,45 +1188,23 @@ int Context::Run() {
         switch (it->second) {
             case Directive::Prefix:
             case Directive::Run:
-            case Directive::InternalCheckEmpty:
-            case Directive::InternalCheckNextEmpty:
-            case Directive::InternalCheckNotEmpty:
                 Unreachable();
 
-            case Directive::Undefine:
-            _default:
-                Add(Stream{value}.fold_ws(), d);
-                break;
-
-            /// Optimise for empty lines.
             case Directive::CheckAny:
-                if (value.empty()) Add(Check::Data{}, Directive::InternalCheckEmpty);
-                else if (pragmas["re"]) {
-                    d = Directive::RegexCheckAny;
-                    goto regex_directive;
-                } else {
-                    goto _default;
-                }
-                break;
-
             case Directive::CheckNext:
-                if (value.empty()) Add(Check::Data{}, Directive::InternalCheckNextEmpty);
-                else if (pragmas["re"]) {
-                    d = Directive::RegexCheckNext;
+            case Directive::CheckNotSame:
+            case Directive::CheckNotAny:
+            case Directive::CheckNotNext: {
+                if (pragmas["re"]) {
+                    d = DirectiveToRegexDirective[usz(d)];
                     goto regex_directive;
-                } else {
-                    goto _default;
                 }
-                break;
 
-            case Directive::CheckNot:
-                if (value.empty()) Add(Check::Data{}, Directive::InternalCheckNotEmpty);
-                else if (pragmas["re"]) {
-                    d = Directive::RegexCheckNot;
-                    goto regex_directive;
-                } else {
-                    goto _default;
-                }
+                [[fallthrough]];
+            }
+
+            case Directive::Undefine:
+                Add(Stream{value}.fold_ws(), d);
                 break;
 
             /// Value of a define must honour literals at definition time.
@@ -1324,7 +1315,9 @@ int Context::Run() {
             /// Take care to handle regex directives.
             case Directive::RegexCheckAny:
             case Directive::RegexCheckNext:
-            case Directive::RegexCheckNot:
+            case Directive::RegexCheckNotSame:
+            case Directive::RegexCheckNotAny:
+            case Directive::RegexCheckNotNext:
             regex_directive: {
                 /// Regex constructor may throw so we don’t have to check for errors
                 /// everywhere we use a regular expression since there is no point in

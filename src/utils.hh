@@ -109,7 +109,7 @@ constexpr auto Trim(std::string_view str) -> std::string_view {
 
 template <typename T>
 requires std::is_enum_v<T>
-auto operator+(T t) -> std::underlying_type_t<T> {
+constexpr auto operator+(T t) -> std::underlying_type_t<T> {
     return static_cast<std::underlying_type_t<T>>(t);
 }
 
