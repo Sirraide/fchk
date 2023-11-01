@@ -5,7 +5,7 @@
 namespace detail {
 using namespace command_line_options;
 using options = clopts< // clang-format off
-    option<"-p", "Check prefix to use">,
+    option<"--prefix", "Check prefix to use">,
     multiple<option<"-l", "Treat character(s) as literal">>,
     multiple<option<"-P", "Set a pragma">>,
     multiple<option<"-D", "Define a constant that can be used in 'R' directives">>,
@@ -20,7 +20,7 @@ int main(int argc, char** argv) {
     auto opts = detail::options::parse(argc, argv);
 
     /// User-provided prefix may not be empty.
-    if (auto pre = opts.get<"-p">(); pre and Trim(*pre).empty())
+    if (auto pre = opts.get<"--prefix">(); pre and Trim(*pre).empty())
         Diag::Fatal("Prefix may not be empty");
 
     /// Collect pragmas.
@@ -36,7 +36,7 @@ int main(int argc, char** argv) {
     Context ctx{
         std::move(opts.get<"checkfile">()->contents),
         std::move(opts.get<"checkfile">()->path),
-        opts.get_or<"-p">(""),
+        opts.get_or<"--prefix">(""),
         std::move(pragmas),
         std::move(literal_chars),
         *opts.get<"-D">(),

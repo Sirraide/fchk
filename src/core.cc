@@ -1091,13 +1091,14 @@ int Context::Run() {
                         this,
                         LocationIn(dir, check_file),
                         "Prefix directive conflicts with prefix '{}' provided on the "
-                        "command-line. Using the latter",
+                        "command-line. Using the former",
                         prefix
                     );
                 }
             }
 
-            /// Do not add a check for this.
+            /// Override the prefix.
+            prefix = value;
             continue;
         }
 
