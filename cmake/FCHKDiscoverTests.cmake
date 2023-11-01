@@ -36,7 +36,7 @@ function(FCHKAddAllTestsInDir)
 
     set(fchk_prefix "")
     if (FCHKAddAllTestsInDir_PREFIX)
-        set(fchk_prefix -p ${FCHKAddAllTestsInDir_PREFIX})
+        set(fchk_prefix --prefix ${FCHKAddAllTestsInDir_PREFIX})
     endif()
 
     foreach (dir ${FCHKAddAllTestsInDir_IN})
