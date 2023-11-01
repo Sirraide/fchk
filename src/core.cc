@@ -1364,6 +1364,7 @@ void Context::RunTest(std::string_view test) {
     utils::ReplaceAll(cmd, "%s", check_file.path.string());
 
     /// Run the command and get its output.
+    if (verbose) fmt::print(stderr, "[FCHK] Running command: {}\n", cmd);
     File input_file{GetProcessOutput(cmd), "<input>"};
     detail::Matcher::Match(*this, input_file);
 }

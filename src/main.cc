@@ -33,6 +33,9 @@ int main(int argc, char** argv) {
         for (auto c : v)
             literal_chars.insert(c);
 
+    if (opts.get<"-v">())
+        fmt::print(stderr, "[FCHK] Running fchk version {}\n", FCHK_VERSION);
+
     Context ctx{
         std::move(opts.get<"checkfile">()->contents),
         std::move(opts.get<"checkfile">()->path),

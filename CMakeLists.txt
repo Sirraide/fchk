@@ -1,5 +1,5 @@
 cmake_minimum_required(VERSION 3.20)
-project(fchk VERSION 0.1.0 LANGUAGES CXX)
+project(fchk VERSION 2.0.2 LANGUAGES CXX)
 
 ## ============================================================================
 ##  Global CMake Variables.
@@ -254,7 +254,10 @@ endif()
 add_executable(fchk ${_fchk_sources})
 
 ## Project dir so we can strip it from diags.
-target_compile_definitions(fchk PRIVATE FCHK_PROJECT_DIR_NAME="fchk")
+target_compile_definitions(fchk PRIVATE
+    FCHK_PROJECT_DIR_NAME="fchk"
+    FCHK_VERSION="${PROJECT_VERSION}"
+)
 
 ## Apply our options.
 target_link_libraries(fchk PRIVATE _fchk_options)
