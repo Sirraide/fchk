@@ -1363,6 +1363,28 @@ void Context::RunTest(std::string_view test) {
     for (auto& [n, v] : defintions) utils::ReplaceAll(cmd, n, v);
     utils::ReplaceAll(cmd, "%s", check_file.path.string());
 
+    /// Warn about unknown '%' defines.
+    if (auto pos = cmd.find('%'); pos != std::string::npos) {
+        auto def = Stream{std::string_view(cmd.data() + pos, cmd.size() - pos)}.read_to_ws();
+
+        /// Find location of directive in original string.
+        std::string_view def_str = test;
+        if (auto def_pos = def_str.find(def); def_pos != std::string_view::npos)
+            def_str = def_str.substr(def_pos, def.size());
+
+        /// Error because the command is likely nonsense if we don’t.
+        Diag::Error(
+            this,
+            LocationIn(def_str, check_file),
+            "'{}' is not defined. Define it on the command-line using '-D {}=...'",
+            def,
+            def.substr(1)
+        );
+
+        /// Don’t even bother running this.
+        return;
+    }
+
     /// Run the command and get its output.
     if (verbose) fmt::print(stderr, "[FCHK] Running command: {}\n", cmd);
     File input_file{GetProcessOutput(cmd), "<input>"};
