@@ -281,7 +281,7 @@ class Context {
     std::vector<std::string_view> run_directives;
 
     /// Directive prefix.
-    std::string_view prefix;
+    std::string prefix;
 
     /// Enabled pragmas.
     utils::Map<std::string, bool> pragmas;
