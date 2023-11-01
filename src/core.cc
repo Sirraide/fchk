@@ -710,7 +710,7 @@ class Matcher {
                 static constexpr usz max_lines = 7;
                 if (usz(i) >= max_lines) break;
                 fmt::print(stderr, " {: >{}} │ ", start + usz(i), utils::NumberWidth(start + max_lines - 1));
-                if (i == 1) fmt::print(stderr, "\033[1;32m{}\n\033[m", line.text.empty() ? "<empty>" : line.text);
+                if (i == 1 - (lc.line == 1)) fmt::print(stderr, "\033[1;32m{}\n\033[m", line.text.empty() ? "<empty>" : line.text);
                 else fmt::print(stderr, "{}\n", line.text);
             }
         };
