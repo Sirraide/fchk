@@ -151,7 +151,24 @@ T
 foobarbaz
 42 - 43 = 43 - 42
 
-## Tried of writing `re` everywhere if you’re using a lot of
+## If you’re having issues w/ wanting to reuse some of your variable
+## names w/o having to undefine them individually, but you also don’t
+## want to undefine *everything*, you can use the `b` (for ‘begin’)
+## directive to open a new scope. Everything defined after that will
+## be undefined at the start of the next `b`.
+##
+## * M
+## b
+## d quux 1234
+## re+ $quux $quux
+## b
+## d quux 5678
+## re+ $quux $quux
+M
+1234 1234
+5678 5678
+
+## Tired of writing `re` everywhere if you’re using a lot of
 ## matches that involve regular expressions? You can use a pragma
 ## or `p` directive to make `*`, `+`, `!` equivalent to `re*`, `re+`,
 ## `re!` for the rest of the file.

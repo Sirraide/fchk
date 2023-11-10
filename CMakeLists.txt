@@ -1,5 +1,5 @@
 cmake_minimum_required(VERSION 3.20)
-project(fchk VERSION 2.0.2 LANGUAGES CXX)
+project(fchk VERSION 2.1.0 LANGUAGES CXX)
 
 ## ============================================================================
 ##  Global CMake Variables.

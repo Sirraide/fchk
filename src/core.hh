@@ -2,6 +2,7 @@
 #define FCHK_CORE_HH
 
 #include <functional>
+#include <map>
 #include <unordered_set>
 #include <utility>
 #include <utils.hh>
@@ -115,6 +116,7 @@ enum struct Directive : u8 {
     RegexCheckNotSame,
     RegexCheckNotAny,
     RegexCheckNotNext,
+    Begin,
     Define,
     Undefine,
     Pragma,
@@ -123,7 +125,7 @@ enum struct Directive : u8 {
     Count = Run
 };
 
-inline constexpr std::array DirectiveToRegexDirective {
+inline constexpr std::array DirectiveToRegexDirective{
     Directive::RegexCheckAny,
     Directive::RegexCheckNext,
     Directive::RegexCheckNotSame,
@@ -134,6 +136,7 @@ inline constexpr std::array DirectiveToRegexDirective {
     Directive::RegexCheckNotSame,
     Directive::RegexCheckNotAny,
     Directive::RegexCheckNotNext,
+    Directive::Begin,
     Directive::Define,
     Directive::Undefine,
     Directive::Pragma,
@@ -152,6 +155,7 @@ inline constexpr std::array DirectiveNames{
     "re!"sv,
     "re!*"sv,
     "re!+"sv,
+    "b"sv,
     "d"sv,
     "u"sv,
     "p"sv,
@@ -232,12 +236,14 @@ public:
 
 /// Entry in the environment.
 struct EnvEntry {
+    std::string name;
     std::string value;
     bool literal;
+    bool local;
 };
 
 /// Environment used by environment regexes.
-using Environment = utils::Map<std::string, EnvEntry>;
+using Environment = std::vector<EnvEntry>;
 
 /// Regular expression together with an environment. Prefer to
 /// use Regex over this if there are no named captures as it will

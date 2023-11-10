@@ -313,10 +313,10 @@ auto EnvironmentRegex::substitute_vars(const Environment& env) -> std::string {
         static constinit std::array<std::string_view, 2> delims{R"(\k<)", "$"sv};
         static const auto IsCaptureGroupName = [](char c) { return std::isalnum(u8(c)) or c == '_'; };
         const auto Add = [&](std::string_view capture, bool escape) {
-            if (auto var = env.find(capture); var != env.end()) {
+            if (auto var = rgs::find(env, capture, &EnvEntry::name); var != env.end()) {
                 /// Always escape literal variables.
-                if (not escape and not var->second.literal) subst += var->second.value;
-                else subst += fmt::format("\\Q{}\\E", var->second.value);
+                if (not escape and not var->literal) subst += var->value;
+                else subst += fmt::format("\\Q{}\\E", var->value);
             } else {
                 throw Regex::Exception("Undefined capture '{}'", capture);
             }
@@ -692,6 +692,9 @@ class Matcher {
     std::vector<Check>::iterator chk;
     Environment env;
 
+    /// Whether we’re in a local environment.
+    bool in_local_env = false;
+
     /// For providing context around a line in error messages.
     struct LineContext {
         Matcher& m;
@@ -738,7 +741,7 @@ class Matcher {
     bool MatchEnvRegex(EnvironmentRegex& re) {
         /// Ensure defined captures don’t overwrite the ENV.
         for (auto& c : re.defined_captures)
-            if (env.contains(c))
+            if (rgs::contains(env, c, &EnvEntry::name))
                 throw RedefError(c);
 
         /// Compile the RE and execute it.
@@ -791,8 +794,8 @@ class Matcher {
     }
 
     void Define(std::string_view key, std::string_view value, bool capture) {
-        if (env.contains(key)) throw RedefError(std::string{key});
-        env[std::string{key}] = {std::string{value}, capture};
+        if (rgs::contains(env, key, &EnvEntry::name)) throw RedefError(std::string{key});
+        env.emplace_back(std::string{key}, std::string{value}, capture, in_local_env);
     }
 
     /// Issue an error at the current position and print the environment
@@ -808,7 +811,7 @@ class Matcher {
         ) {
             if (env.empty()) return;
             if (ctx->verbose) {
-                auto env_strs = env | vws::transform([](auto&& p) { return fmt::format("{} = {}", p.first, p.second.value); });
+                auto env_strs = env | vws::transform([](auto&& p) { return fmt::format("{} = {}", p.name, p.value); });
                 Diag::Note(ctx, chk->loc, "With env: [\n    {}\n]\n", fmt::join(env_strs, "\n    ")).no_line();
             }
 
@@ -865,6 +868,12 @@ class Matcher {
             case Directive::Pragma:
                 Unreachable();
 
+            case Directive::Begin: {
+                /// Yeet everything defined after the last definition point.
+                std::erase_if(env, &EnvEntry::local);
+                in_local_env = true;
+            } break;
+
             case Directive::Define: {
                 auto& line = std::get<std::string>(chk->data);
                 Stream s{line};
@@ -876,7 +885,7 @@ class Matcher {
             case Directive::Undefine: {
                 auto& var = std::get<std::string>(chk->data);
                 if (var == "*") env.clear();
-                else if (auto it = env.find(var); it != env.end()) env.erase(it);
+                else if (auto it = rgs::find(env, var, &EnvEntry::name); it != env.end()) env.erase(it);
                 else Diag::Warning(ctx, chk->loc, "Variable '{}' is not defined", var);
             } break;
 
@@ -1027,6 +1036,7 @@ int Context::Run() {
         {DirectiveNames[+Directive::RegexCheckNotSame], Directive::RegexCheckNotSame},
         {DirectiveNames[+Directive::RegexCheckNotAny], Directive::RegexCheckNotAny},
         {DirectiveNames[+Directive::RegexCheckNotNext], Directive::RegexCheckNotNext},
+        {DirectiveNames[+Directive::Begin], Directive::Begin},
         {DirectiveNames[+Directive::Define], Directive::Define},
         {DirectiveNames[+Directive::Undefine], Directive::Undefine},
         {DirectiveNames[+Directive::Pragma], Directive::Pragma},
@@ -1065,7 +1075,7 @@ int Context::Run() {
                 .skip_to(prefix)
                 .skip_to_ws()
                 .skip_ws()
-                .read_to_ws()
+                .read_to_any(" \t\v\f\r\n", true)
         );
         if (dir.empty()) break;
 
@@ -1073,13 +1083,8 @@ int Context::Run() {
         auto it = name_directive_map.find(dir);
         if (it == name_directive_map.end()) continue;
 
-        /// Read the directive’s argument.
-        auto value = Trim(
-            chfile
-                .skip_to_ws()
-                .skip_ws()
-                .read_to("\n")
-        );
+        /// Read the directive’s argument, if any.
+        auto value = chfile.at("\n") ? "" : Trim(chfile.skip_to_ws().skip_ws().read_to("\n"));
 
         /// Handle spurious prefix directives
         if (it->second == Directive::Prefix) {
@@ -1195,17 +1200,21 @@ int Context::Run() {
             case Directive::CheckNext:
             case Directive::CheckNotSame:
             case Directive::CheckNotAny:
-            case Directive::CheckNotNext: {
+            case Directive::CheckNotNext:
                 if (pragmas["re"]) {
                     d = DirectiveToRegexDirective[usz(d)];
                     goto regex_directive;
                 }
 
-                [[fallthrough]];
-            }
+                Add(Stream{value}.fold_ws(), d);
+                break;
 
             case Directive::Undefine:
                 Add(Stream{value}.fold_ws(), d);
+                break;
+
+            case Directive::Begin:
+                Add("", d);
                 break;
 
             /// Value of a define must honour literals at definition time.
