@@ -151,15 +151,22 @@ Context::Context(
     bool abort_on_error,
     bool verbose
 ) : check_file{std::move(check), std::move(check_name)},
-    prefix(std::move(prefix)),
-    pragmas(std::move(pragmas)),
-    literal_chars(std::move(literal_chars)),
+    default_pragmas(std::move(pragmas)),
+    default_literal_chars(std::move(literal_chars)),
     abort_on_error(abort_on_error),
     verbose(verbose) {
+    /// Initialise known pragmas.
+    if (not default_pragmas.contains("re")) default_pragmas["re"] = false;
+    if (not default_pragmas.contains("nocap")) default_pragmas["nocap"] = false;
+
+    /// Create initial state.
+    CreatePrefixState(prefix);
+
+    /// Save definitions.
     for (auto& d : defines) {
         auto eq = d.find('=');
-        if (eq == std::string::npos) Diag::Fatal("Syntax of '-D' option is '-Dname=value'", d);
-        defintions["%" + d.substr(0, eq)] = d.substr(eq + 1);
+        if (eq == std::string::npos) Diag::Fatal("Syntax of '-D' option is '-D name=value'", d);
+        definitions["%" + d.substr(0, eq)] = d.substr(eq + 1);
     }
 }
 
@@ -687,9 +694,10 @@ class Matcher {
 
     Context* const ctx;
     [[maybe_unused]] File& input_file;
+    std::span<Check> checks;
     std::vector<Line> input_lines;
     std::vector<Line>::iterator in, prev;
-    std::vector<Check>::iterator chk;
+    std::span<Check>::iterator chk;
     Environment env;
 
     /// Whether we’re in a local environment.
@@ -724,7 +732,7 @@ class Matcher {
         }
     };
 
-    Matcher(Context& ctx, File& input_file) : ctx{&ctx}, input_file{input_file} {
+    Matcher(Context& ctx, File& input_file, std::span<Check> checks) : ctx{&ctx}, input_file{input_file}, checks{checks} {
         const auto ProcessLine = [&](auto&& r) -> Line {
             auto sv = std::string_view{&*r.begin(), usz(rgs::distance(r))};
             return {Stream{sv}.fold_ws(), ctx.LocationIn(sv, input_file)};
@@ -734,7 +742,7 @@ class Matcher {
         auto range = input_file.contents | vws::split('\n') | vws::transform(ProcessLine);
         input_lines = {range.begin(), range.end()};
         prev = in = input_lines.begin();
-        chk = ctx.checks.begin();
+        chk = this->checks.begin();
     }
 
     /// Match a regular expression that uses the environment.
@@ -785,8 +793,8 @@ class Matcher {
     void AdvanceLineAfterCheck() {
         if (
             in == input_lines.end() or
-            chk == ctx->checks.end() or
-            std::next(chk) == ctx->checks.end() or
+            chk == checks.end() or
+            std::next(chk) == checks.end() or
             std::next(chk)->dir == Directive::CheckNotSame or
             std::next(chk)->dir == Directive::RegexCheckNotSame
         ) return;
@@ -836,7 +844,7 @@ class Matcher {
     /// so keep skipping until the *next* directive is not a CheckNext
     /// directive.
     void SkipCheckNextDirs() {
-        while (chk < std::prev(ctx->checks.end())) {
+        while (chk < std::prev(checks.end())) {
             switch (std::next(chk)->dir) {
                 default: return;
                 case Directive::CheckNext:
@@ -987,7 +995,7 @@ class Matcher {
 
     void Match() {
         /// Match the input against the checks.
-        for (; chk != ctx->checks.end() and in != input_lines.end(); ++chk) {
+        for (; chk != checks.end() and in != input_lines.end(); ++chk) {
             try {
                 Step();
             } catch (const Regex::Exception& e) {
@@ -1006,11 +1014,11 @@ class Matcher {
             if (ctx->has_error and ctx->abort_on_error) std::exit(1);
 
             /// Take care not to go out of bounds here.
-            if (chk == ctx->checks.end()) return;
+            if (chk == checks.end()) return;
         }
 
         /// If we have more checks than input lines, we have a problem.
-        if (chk != ctx->checks.end() and not ctx->has_error) Diag::Error(
+        if (chk != checks.end() and not ctx->has_error) Diag::Error(
             ctx,
             chk->loc,
             "End of file reached looking for string"
@@ -1018,105 +1026,103 @@ class Matcher {
     }
 
 public:
-    static void Match(Context& ctx, File& input_file) {
-        Matcher{ctx, input_file}.Match();
+    static void Match(Context& ctx, File& input_file, std::span<Check> checks) {
+        Matcher{ctx, input_file, checks}.Match();
     }
 };
+
+static std::unordered_map<std::string_view, Directive> NameDirectiveMap{
+    {DirectiveNames[+Directive::CheckAny], Directive::CheckAny},
+    {DirectiveNames[+Directive::CheckNext], Directive::CheckNext},
+    {DirectiveNames[+Directive::CheckNotSame], Directive::CheckNotSame},
+    {DirectiveNames[+Directive::CheckNotAny], Directive::CheckNotAny},
+    {DirectiveNames[+Directive::CheckNotNext], Directive::CheckNotNext},
+    {DirectiveNames[+Directive::RegexCheckAny], Directive::RegexCheckAny},
+    {DirectiveNames[+Directive::RegexCheckNext], Directive::RegexCheckNext},
+    {DirectiveNames[+Directive::RegexCheckNotSame], Directive::RegexCheckNotSame},
+    {DirectiveNames[+Directive::RegexCheckNotAny], Directive::RegexCheckNotAny},
+    {DirectiveNames[+Directive::RegexCheckNotNext], Directive::RegexCheckNotNext},
+    {DirectiveNames[+Directive::Begin], Directive::Begin},
+    {DirectiveNames[+Directive::Define], Directive::Define},
+    {DirectiveNames[+Directive::Undefine], Directive::Undefine},
+    {DirectiveNames[+Directive::Pragma], Directive::Pragma},
+    {DirectiveNames[+Directive::Prefix], Directive::Prefix},
+    {DirectiveNames[+Directive::Run], Directive::Run},
+};
+
+const auto RunWithPrefixDirectiveNameStart = fmt::format("{}[", DirectiveNames[+Directive::Run]);
+
 } // namespace detail
 
-int Context::Run() {
-    static std::unordered_map<std::string_view, Directive> name_directive_map{
-        {DirectiveNames[+Directive::CheckAny], Directive::CheckAny},
-        {DirectiveNames[+Directive::CheckNext], Directive::CheckNext},
-        {DirectiveNames[+Directive::CheckNotSame], Directive::CheckNotSame},
-        {DirectiveNames[+Directive::CheckNotAny], Directive::CheckNotAny},
-        {DirectiveNames[+Directive::CheckNotNext], Directive::CheckNotNext},
-        {DirectiveNames[+Directive::RegexCheckAny], Directive::RegexCheckAny},
-        {DirectiveNames[+Directive::RegexCheckNext], Directive::RegexCheckNext},
-        {DirectiveNames[+Directive::RegexCheckNotSame], Directive::RegexCheckNotSame},
-        {DirectiveNames[+Directive::RegexCheckNotAny], Directive::RegexCheckNotAny},
-        {DirectiveNames[+Directive::RegexCheckNotNext], Directive::RegexCheckNotNext},
-        {DirectiveNames[+Directive::Begin], Directive::Begin},
-        {DirectiveNames[+Directive::Define], Directive::Define},
-        {DirectiveNames[+Directive::Undefine], Directive::Undefine},
-        {DirectiveNames[+Directive::Pragma], Directive::Pragma},
-        {DirectiveNames[+Directive::Prefix], Directive::Prefix},
-        {DirectiveNames[+Directive::Run], Directive::Run},
-    };
-
-    /// If we don’t know what the prefix is, look for a
-    /// prefix directive.
+void Context::CollectDirectives(PrefixState& state) {
     Stream chfile{check_file.contents};
-    const bool have_command_line_prefix = not prefix.empty();
-    if (not have_command_line_prefix) {
-        prefix = Trim(
-            Stream{chfile}
-                .skip_to(DirectiveNames[+Directive::Prefix])
-                .skip_to_ws()
-                .skip_ws()
-                .read_to("\n")
-        );
 
-        if (prefix.empty()) Diag::Fatal(
-            "No prefix provided and no {} directive found in check file",
-            DirectiveNames[+Directive::Prefix]
-        );
-    }
+    /// Read a directive’s argument, if any.
+    auto ReadDirectiveArg = [&] { return chfile.at("\n") ? "" : Trim(chfile.skip_to_ws().skip_ws().read_to("\n")); };
 
-    /// Initialise known pragmas.
-    if (not pragmas.contains("re")) pragmas["re"] = false;
-    if (not pragmas.contains("nocap")) pragmas["nocap"] = false;
-
-    /// Collect check directives.
+    /// Find all directives in the file.
     for (;;) {
         /// Read directive.
         auto dir = Trim(
             chfile
-                .skip_to(prefix)
+                .skip_to(state.prefix)
                 .skip_to_ws()
                 .skip_ws()
                 .read_to_any(" \t\v\f\r\n", true)
         );
         if (dir.empty()) break;
 
-        /// Check if this really is a directive.
-        auto it = name_directive_map.find(dir);
-        if (it == name_directive_map.end()) continue;
+        /// Handle run directives.
+        if (dir.starts_with(detail::RunWithPrefixDirectiveNameStart) and dir.ends_with(']')) {
+            auto prefix = dir.substr(detail::RunWithPrefixDirectiveNameStart.size());
+            prefix.remove_suffix(1);
 
-        /// Read the directive’s argument, if any.
-        auto value = chfile.at("\n") ? "" : Trim(chfile.skip_to_ws().skip_ws().read_to("\n"));
+            /// If there currently is no state for this prefix, create it.
+            PrefixState* new_state;
+            if (
+                auto it = rgs::find(states_by_prefix, prefix, &PrefixState::prefix);
+                it == states_by_prefix.end()
+            ) {
+                new_state = CreatePrefixState(std::string{prefix});
 
-        /// Handle spurious prefix directives
-        if (it->second == Directive::Prefix) {
-            /// A prefix provided on the command-line overrides the one
-            /// in the file, if it is different.
-            if (have_command_line_prefix) {
-                if (prefix != value) {
-                    Diag::Warning(
-                        this,
-                        LocationIn(dir, check_file),
-                        "Prefix directive conflicts with prefix '{}' provided on the "
-                        "command-line. Using the former",
-                        prefix
-                    );
-                }
+                /// Collect all directives for the new prefix.
+                CollectDirectives(*new_state);
+            } else {
+                new_state = &*it;
             }
 
-            /// Override the prefix.
-            prefix = value;
+            /// Add a run directive.
+            run_directives.emplace_back(ReadDirectiveArg(), new_state);
             continue;
         }
 
-        /// Run directive.
+        /// Check if this really is a directive.
+        auto it = detail::NameDirectiveMap.find(dir);
+        if (it == detail::NameDirectiveMap.end()) continue;
+        auto value = ReadDirectiveArg();
+
+        /// Handle spurious prefix directives
+        if (it->second == Directive::Prefix) {
+            /// Overriding the prefix is not allowed anymore.
+            if (state.prefix != value) Diag::Warning(
+                this,
+                LocationIn(dir, check_file),
+                "Conflicting prefix directive ignored (current prefix is '{}')",
+                state.prefix
+            );
+            continue;
+        }
+
+        /// Regular run directive.
         if (it->second == Directive::Run) {
-            run_directives.push_back(value);
+            run_directives.emplace_back(value, &state);
             continue;
         }
 
         /// Helper to abbreviate adding a check.
         Directive d = it->second;
         const auto loc = LocationIn(value, check_file);
-        const auto Add = [&](auto&& val, Directive d) { checks.emplace_back(d, std::forward<decltype(val)>(val), loc); };
+        const auto Add = [&](auto&& val, Directive d) { state.checks.emplace_back(d, std::forward<decltype(val)>(val), loc); };
 
         /// Helper to apply the 'p nocap' and 'p lit' pragmas to a string.
         auto SubstituteNoCapAndLiterals = [&](std::string& expr) {
@@ -1126,7 +1132,7 @@ int Context::Run() {
             ///
             /// Furthermore, ignore unmatched parens as the regex
             /// engine will error over that anyway.
-            if (pragmas["nocap"]) {
+            if (state.pragmas["nocap"]) {
                 /// We need to 1. not escape '(' and ')' if the '('
                 /// is followed by '?', and 2. make sure we match
                 /// the closing ')' correctly.
@@ -1183,7 +1189,7 @@ int Context::Run() {
             }
 
             /// Escape dots if the corresponding pragma is set.
-            for (auto c : literal_chars) utils::ReplaceAll(
+            for (auto c : state.literal_chars) utils::ReplaceAll(
                 expr,
                 std::string_view{&c, 1},
                 fmt::format("\\{}", c)
@@ -1201,7 +1207,7 @@ int Context::Run() {
             case Directive::CheckNotSame:
             case Directive::CheckNotAny:
             case Directive::CheckNotNext:
-                if (pragmas["re"]) {
+                if (state.pragmas["re"]) {
                     d = DirectiveToRegexDirective[usz(d)];
                     goto regex_directive;
                 }
@@ -1284,16 +1290,16 @@ int Context::Run() {
                         /// and numbers altogether here.
                         for (auto c : arg)
                             if (not std::isalnum(u8(c)))
-                                literal_chars.insert(c);
+                                state.literal_chars.insert(c);
                     } else {
-                        std::erase_if(literal_chars, [&](auto c) { return arg.contains(c); });
+                        std::erase_if(state.literal_chars, [&](auto c) { return arg.contains(c); });
                     }
                 }
 
                 /// Other pragmas are simple boolean flags.
                 else {
                     /// Ignore unknown pragmas.
-                    if (not pragmas.contains(name)) {
+                    if (not state.pragmas.contains(name)) {
                         Diag::Warning(
                             this,
                             LocationIn(name, check_file),
@@ -1311,7 +1317,7 @@ int Context::Run() {
                     );
 
                     /// Set the pragma.
-                    pragmas[std::string{name}] = arg != "off";
+                    state.pragmas[std::string{name}] = arg != "off";
                 }
 
                 /// Warn about junk.
@@ -1338,7 +1344,7 @@ int Context::Run() {
 
                     /// Construct an environment regex if captures are used.
                     static constinit std::array<std::string_view, 3> delims{"?<"sv, R"(\k<)", "$"sv};
-                    if (Stream{value}.skip_to_any(delims).size() >= 2) Add(EnvironmentRegex{expr, literal_chars}, d);
+                    if (Stream{value}.skip_to_any(delims).size() >= 2) Add(EnvironmentRegex{expr, state.literal_chars}, d);
                     else Add(Regex{expr}, d);
                 } catch (const Regex::Exception& e) {
                     Diag::Error(
@@ -1351,6 +1357,39 @@ int Context::Run() {
             } break;
         }
     }
+}
+
+auto Context::CreatePrefixState(std::string prefix) -> PrefixState* {
+    return &states_by_prefix.emplace_back(
+        std::move(prefix),
+        std::vector<Check>{},
+        default_pragmas,
+        default_literal_chars
+    );
+}
+
+int Context::Run() {
+    /// If we don’t know what the prefix is, look for a
+    /// prefix directive.
+    Stream chfile{check_file.contents};
+    const bool have_command_line_prefix = not states_by_prefix[0].prefix.empty();
+    if (not have_command_line_prefix) {
+        states_by_prefix[0].prefix = Trim(
+            Stream{chfile}
+                .skip_to(DirectiveNames[+Directive::Prefix])
+                .skip_to_ws()
+                .skip_ws()
+                .read_to("\n")
+        );
+
+        if (states_by_prefix[0].prefix.empty()) Diag::Fatal(
+            "No prefix provided and no {} directive found in check file",
+            DirectiveNames[+Directive::Prefix]
+        );
+    }
+
+    /// Collect check directives.
+    CollectDirectives(states_by_prefix[0]);
 
     /// Don’t even bother matching if there was an error.
     if (has_error) return 1;
@@ -1362,14 +1401,14 @@ int Context::Run() {
     );
 
     /// Dew it.
-    for (auto rd : run_directives) RunTest(rd);
+    for (auto& [cmd, state] : run_directives) RunTest(cmd, *state);
     return has_error ? 1 : 0;
 }
 
-void Context::RunTest(std::string_view test) {
+void Context::RunTest(std::string_view test, PrefixState& state) {
     /// Substitute occurrences of `%s` with the file name.
     auto cmd = std::string{test};
-    for (auto& [n, v] : defintions) utils::ReplaceAll(cmd, n, v);
+    for (auto& [n, v] : definitions) utils::ReplaceAll(cmd, n, v);
     utils::ReplaceAll(cmd, "%s", check_file.path.string());
 
     /// Warn about unknown '%' defines.
@@ -1397,5 +1436,5 @@ void Context::RunTest(std::string_view test) {
     /// Run the command and get its output.
     if (verbose) fmt::print(stderr, "[FCHK] Running command: {}\n", cmd);
     File input_file{GetProcessOutput(cmd), "<input>"};
-    detail::Matcher::Match(*this, input_file);
+    detail::Matcher::Match(*this, input_file, state.checks);
 }

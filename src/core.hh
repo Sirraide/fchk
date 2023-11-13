@@ -1,6 +1,7 @@
 #ifndef FCHK_CORE_HH
 #define FCHK_CORE_HH
 
+#include <deque>
 #include <functional>
 #include <map>
 #include <unordered_set>
@@ -277,26 +278,44 @@ class Matcher;
 
 struct Diag;
 class Context {
+    /// State associated with a particular prefix.
+    struct PrefixState {
+        /// The prefix for this state.
+        std::string prefix;
+
+        /// The checks that we have to perform.
+        std::vector<Check> checks;
+
+        /// Enabled pragmas.
+        utils::Map<std::string, bool> pragmas;
+
+        /// Characters to be treated as literal in regexes.
+        std::unordered_set<char> literal_chars;
+    };
+
+    /// A single test program.
+    struct Test {
+        std::string_view run_directive;
+        PrefixState* state;
+    };
+
     /// Checks
     File check_file;
 
-    /// The checks that we have to perform.
-    std::vector<Check> checks;
+    /// State for each prefix. 0 is the default one.
+    std::deque<PrefixState> states_by_prefix;
 
-    /// Programs to execute.
-    std::vector<std::string_view> run_directives;
+    /// Programs to run and associated checks.
+    std::vector<Test> run_directives;
 
-    /// Directive prefix.
-    std::string prefix;
+    /// Default pragmas set on the command line.
+    utils::Map<std::string, bool> default_pragmas;
 
-    /// Enabled pragmas.
-    utils::Map<std::string, bool> pragmas;
-
-    /// Characters to be treated as literal in regexes.
-    std::unordered_set<char> literal_chars;
+    /// Default literal chars set on the command line.
+    std::unordered_set<char> default_literal_chars;
 
     /// Definitions for run directives.
-    utils::StrMap defintions;
+    utils::StrMap definitions;
 
     /// Stop on an error.
     bool abort_on_error;
@@ -339,8 +358,14 @@ public:
     int Run();
 
 private:
+    /// Collect all directives that start with a prefix.
+    void CollectDirectives(PrefixState& state);
+
+    /// Create a default prefix state.
+    auto CreatePrefixState(std::string prefix) -> PrefixState*;
+
     /// Run a test.
-    void RunTest(std::string_view test);
+    void RunTest(std::string_view test, PrefixState& state);
 };
 
 /// A diagnostic. The diagnostic is issued when the destructor is called.
@@ -498,6 +523,13 @@ public:
         Args&&... args
     ) {
         Diag{ctx, Kind::ICError, where, fmt::format(fmt, std::forward<Args>(args)...)};
+        std::terminate(); /// Should never be reached.
+    }
+
+    /// Raise a fatal error and exit.
+    template <typename... Args>
+    [[noreturn]] static void Fatal(const Context* ctx, Location where, fmt::format_string<Args...> fmt, Args&&... args) {
+        Diag{ctx, Kind::FError, where, fmt::format(fmt, std::forward<Args>(args)...)};
         std::terminate(); /// Should never be reached.
     }
 

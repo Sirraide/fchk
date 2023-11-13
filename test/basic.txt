@@ -235,3 +235,16 @@ Z
 ## re+ () (?:(test)) ))((
 Y
 () (test) ))((
+
+## A common pattern is to run multiple programs on a single input and
+## test all of their outputs in the same file. This typically requires
+## you to be able to associate different checks with different run
+## directives.
+##
+## To facilitate this, the `R` directive can take an optional prefix
+## parameter that the `fchk` prefix is set to when executing that program.
+##
+##
+## R[??] echo foo ; echo bar baz
+?? * foo
+?? + bar baz
