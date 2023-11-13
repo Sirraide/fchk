@@ -1061,21 +1061,14 @@ void Context::CollectDirectives(PrefixState& state) {
     auto ReadDirectiveArg = [&] { return chfile.at("\n") ? "" : Trim(chfile.skip_to_ws().skip_ws().read_to("\n")); };
 
     /// Find all directives in the file.
-    for (;;) {
-        /// Read directive.
-        auto dir = Trim(
-            chfile
-                .skip_to(state.prefix)
-                .skip_to_ws()
-                .skip_ws()
-                .read_to_any(" \t\v\f\r\n", true)
-        );
-        if (dir.empty()) break;
+    while (not chfile.empty()) {
+        chfile.skip_to(state.prefix).skip(state.prefix.size()).skip_ws();
 
         /// Handle run directives.
-        if (dir.starts_with(detail::RunWithPrefixDirectiveNameStart) and dir.ends_with(']')) {
-            auto prefix = dir.substr(detail::RunWithPrefixDirectiveNameStart.size());
-            prefix.remove_suffix(1);
+        if (chfile.at(detail::RunWithPrefixDirectiveNameStart)) {
+            auto prefix = Trim(chfile.read_to_any("]\r\n", true));
+            if (not chfile.at("]")) continue;
+            prefix.remove_prefix(detail::RunWithPrefixDirectiveNameStart.size());
 
             /// If there currently is no state for this prefix, create it.
             PrefixState* new_state;
@@ -1095,6 +1088,10 @@ void Context::CollectDirectives(PrefixState& state) {
             run_directives.emplace_back(ReadDirectiveArg(), new_state);
             continue;
         }
+
+        /// Read directive.
+        auto dir = Trim(chfile.read_to_any(" \t\v\f\r\n", true));
+        if (dir.empty()) continue;
 
         /// Check if this really is a directive.
         auto it = detail::NameDirectiveMap.find(dir);

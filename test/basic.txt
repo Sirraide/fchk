@@ -245,6 +245,6 @@ Y
 ## parameter that the `fchk` prefix is set to when executing that program.
 ##
 ##
-## R[??] echo foo ; echo bar baz
-?? * foo
-?? + bar baz
+## R[? ?] echo foo ; echo bar baz
+? ? * foo
+? ? + bar baz
