@@ -68,9 +68,23 @@ auto GetWindowsError() -> std::string {
 auto GetProcessOutput(std::string_view cmd) -> std::string {
 #ifndef _WIN32
     auto pipe = ::popen(cmd.data(), "r");
-    if (not pipe) Diag::Fatal("Failed to run command '{}': {}", cmd, std::strerror(errno));
+    if (not pipe) {
+        Diag::Error("Failed to run command '{}': {}", cmd, std::strerror(errno));
+        std::exit(1);
+    }
+
     auto output = utils::Drain(pipe);
-    ::pclose(pipe);
+    auto code = ::pclose(pipe);
+    if (not WIFEXITED(code)) {
+        Diag::Error("Command '{}' exited abnormally", cmd);
+        std::exit(1);
+    }
+
+    if (WEXITSTATUS(code) != 0) {
+        Diag::Error("Command '{}' exited with status {}", cmd, WEXITSTATUS(code));
+        std::exit(1);
+    }
+
     return output;
 #else
     HANDLE pipe_read{}, pipe_write{};
@@ -105,7 +119,10 @@ auto GetProcessOutput(std::string_view cmd) -> std::string {
             &si,
             &pi
         )
-    ) Diag::Fatal("Failed to create process: {}", GetWindowsError());
+    ) {
+        Diag::Error("Failed to create process: {}", GetWindowsError());
+        std::exit(1);
+    }
 
     /// Close the write end of the pipe.
     CloseHandle(pipe_write);
@@ -129,6 +146,16 @@ auto GetProcessOutput(std::string_view cmd) -> std::string {
 
     /// Wait for the process to exit.
     WaitForSingleObject(pi.hProcess, INFINITE);
+
+    /// Check its exit code.
+    DWORD exit_code{};
+    if (GetExitCodeProcess(pi.hProcess, &exit_code) == FALSE)
+        Diag::Fatal("Failed to get exit code: {}", GetWindowsError());
+
+    if (exit_code != 0) {
+        Diag::Error("Command '{}' exited with status {}", cmd, exit_code);
+        std::exit(1);
+    }
 
     /// Close the process and thread handles.
     CloseHandle(pi.hProcess);
