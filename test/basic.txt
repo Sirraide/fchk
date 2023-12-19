@@ -248,3 +248,18 @@ Y
 ## R[? ?] echo foo ; echo bar baz
 ? ? * foo
 ? ? + bar baz
+
+## If you need to use multiple captures that all use the same pattern, you can
+## use the `captype` pragma to enable the `$name:type` shorthand for capture
+## groups. The type name is anything up to the next whitespace character.
+##
+## p captype
+## u a
+## d a a+
+##
+## * ABC
+## re+ $xxx:a $yyy:a
+## re+ $xxx $xxx $yyy $yyy
+ABC
+aa aaaa
+aa aa aaaa aaaa

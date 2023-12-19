@@ -185,6 +185,7 @@ Context::Context(
     /// Initialise known pragmas.
     if (not default_pragmas.contains("re")) default_pragmas["re"] = false;
     if (not default_pragmas.contains("nocap")) default_pragmas["nocap"] = false;
+    if (not default_pragmas.contains("captype")) default_pragmas["captype"] = false;
 
     /// Create initial state.
     CreatePrefixState(prefix);
@@ -265,8 +266,8 @@ struct RedefError : std::exception {
 };
 
 Regex::~Regex() noexcept {
-    pcre2_code_free(reinterpret_cast<pcre2_code*>(re_ptr));
-    pcre2_match_data_free(reinterpret_cast<pcre2_match_data*>(data_ptr));
+    pcre2_code_free(static_cast<pcre2_code*>(re_ptr));
+    pcre2_match_data_free(static_cast<pcre2_match_data*>(data_ptr));
 }
 
 Regex::Regex(std::string_view pattern) {
@@ -311,8 +312,8 @@ Regex::Regex(std::string_view pattern) {
 }
 
 bool Regex::match(std::string_view str, u32 flags = 0) const noexcept {
-    auto re = reinterpret_cast<pcre2_code*>(re_ptr);
-    auto data = reinterpret_cast<pcre2_match_data*>(data_ptr);
+    auto re = static_cast<pcre2_code*>(re_ptr);
+    auto data = static_cast<pcre2_match_data*>(data_ptr);
     int code = pcre2_match(
         re,
         reinterpret_cast<PCRE2_SPTR8>(str.data()),
@@ -325,9 +326,44 @@ bool Regex::match(std::string_view str, u32 flags = 0) const noexcept {
     return code >= 0;
 }
 
-EnvironmentRegex::EnvironmentRegex(std::string pattern, std::unordered_set<char> literal_chars)
-    : re_str(std::move(pattern)),
-      literal_chars(std::move(literal_chars)) {
+EnvironmentRegex::EnvironmentRegex(
+    std::string pattern,
+    std::unordered_set<char> literal_chars,
+    bool captype
+) : re_str(std::move(pattern)),
+    literal_chars(std::move(literal_chars)) {
+    /// Preprocessing step for typed captures.
+    if (captype) {
+        std::string processed;
+        Stream s{re_str};
+        for (;;) {
+            processed += s.read_to("$", true);
+            Stream saved = s;
+            s.skip(1);
+            if (s.empty()) {
+                processed += *saved;
+                break;
+            }
+
+            /// Find ":".
+            auto capture = s.read_to_any(": \t\n\r\f\v", true);
+
+            /// Got one.
+            if (s.at(":")) {
+                s.skip(1);
+                auto type = s.read_to_ws(true);
+                processed += fmt::format("(?<{}>${})", capture, type);
+            }
+
+            /// Regular capture.
+            else {
+                processed += saved.read(saved.size() - s.size(), true);
+                s = saved;
+            }
+        }
+        re_str = std::move(processed);
+    }
+
     /// Find all captures defined by this pattern.
     Stream s{re_str};
     for (;;) {
@@ -614,6 +650,10 @@ auto Stream::fold_ws() const -> std::string {
         out += ' ';
         s.skip_ws();
     }
+}
+
+auto Stream::read(usz elems, bool discard) -> SV {
+    return yield_until(elems, discard);
 }
 
 auto Stream::read_to(SV delim, bool discard) -> SV {
@@ -1368,8 +1408,11 @@ void Context::CollectDirectives(PrefixState& state) {
 
                     /// Construct an environment regex if captures are used.
                     static constinit std::array<std::string_view, 3> delims{"?<"sv, R"(\k<)", "$"sv};
-                    if (Stream{value}.skip_to_any(delims).size() >= 2) Add(EnvironmentRegex{expr, state.literal_chars}, d);
-                    else Add(Regex{expr}, d);
+                    if (Stream{value}.skip_to_any(delims).size() >= 2) {
+                        Add(EnvironmentRegex{expr, state.literal_chars, state.pragmas["captype"]}, d);
+                    } else {
+                        Add(Regex{expr}, d);
+                    }
                 } catch (const Regex::Exception& e) {
                     Diag::Error(
                         this,

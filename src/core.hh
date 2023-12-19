@@ -257,7 +257,13 @@ struct EnvironmentRegex {
     /// Create a new regular expression.
     ///
     /// \param pattern The pattern to match.
-    EnvironmentRegex(std::string pattern, std::unordered_set<char> literal_chars);
+    /// \param literal_chars Characters to be treated as literal.
+    /// \param captype Whether the ‘typed captures’ feature (e.g. $name:type) is enabled.
+    EnvironmentRegex(
+        std::string pattern,
+        std::unordered_set<char> literal_chars,
+        bool captype
+    );
 
     /// Substitute environment variables in the string.
     auto substitute_vars(const Environment& env) -> std::string;
@@ -589,6 +595,9 @@ public:
     /// \return The first character of the stream, or \0
     /// if the stream is empty
     [[nodiscard]] char front() { return empty() ? 0 : text.front(); }
+
+    /// Read up to a position.
+    [[nodiscard]] auto read(usz elems, bool discard = false) -> SV;
 
     /// Read up to a delimiter.
     ///
