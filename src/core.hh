@@ -578,7 +578,9 @@ public:
     [[nodiscard]] bool at(SV sv) const { return text.starts_with(sv); }
 
     /// Check if this stream starts with any of a set of characters.
-    [[nodiscard]] bool at_any(SV chars) const { return chars.find_first_of(text.front()) != SV::npos; }
+    [[nodiscard]] bool at_any(SV chars) const {
+        return not empty() and chars.find_first_of(text.front()) != SV::npos;
+    }
 
     /// Get the current data pointer.
     [[nodiscard]] auto data() const -> const char* { return text.data(); }

@@ -349,7 +349,7 @@ EnvironmentRegex::EnvironmentRegex(
             auto capture = s.read_to_any(": \t\n\r\f\v", true);
 
             /// Got one.
-            if (s.at(":") and (s.skip(1), not s.at_any(" \t\n\r\f\v"))) {
+            if (s.at(":") and (s.skip(1), not s.empty() and not s.at_any(" \t\n\r\f\v"))) {
                 auto type = s.read_to_ws(true);
                 processed += fmt::format("(?<{}>${})", capture, type);
             }
