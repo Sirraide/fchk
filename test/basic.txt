@@ -259,7 +259,7 @@ Y
 ##
 ## * ABC
 ## re+ $xxx:a $yyy:a
-## re+ $xxx $xxx $yyy $yyy
+## re+ $xxx: $xxx $yyy $yyy
 ABC
 aa aaaa
-aa aa aaaa aaaa
+aa: aa aaaa aaaa
