@@ -346,11 +346,11 @@ EnvironmentRegex::EnvironmentRegex(
             }
 
             /// Find ":".
-            auto capture = s.read_to_any(": \t\n\r\f\v", true);
+            auto capture = s.read_while([](char c) { return std::isalnum(u8(c)) or c == '_'; }, true);
 
             /// Got one.
             if (s.at(":") and (s.skip(1), not s.empty() and not s.at_any(" \t\n\r\f\v"))) {
-                auto type = s.read_to_ws(true);
+                auto type = s.read_while([](char c) { return std::isalnum(u8(c)) or c == '_'; }, true);
                 processed += fmt::format("(?<{}>${})", capture, type);
             }
 
