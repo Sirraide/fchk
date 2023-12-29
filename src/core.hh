@@ -276,6 +276,21 @@ struct Check {
     Directive dir;
     Data data;
     Location loc;
+
+    bool is_negative_check() const {
+        switch (dir) {
+            default: return false;
+            case Directive::CheckNotSame:
+            case Directive::CheckNotAny:
+            case Directive::CheckNotNext:
+            case Directive::RegexCheckAny:
+            case Directive::RegexCheckNext:
+            case Directive::RegexCheckNotSame:
+            case Directive::RegexCheckNotAny:
+            case Directive::RegexCheckNotNext:
+                return true;
+        }
+    }
 };
 
 namespace detail {

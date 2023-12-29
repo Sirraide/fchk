@@ -1083,7 +1083,10 @@ class Matcher {
             if (chk == checks.end()) return;
         }
 
-        /// If we have more checks than input lines, we have a problem.
+        /// If we have more checks than input lines, we have a problem,
+        /// except if the checks are negative checks, which we can simply
+        /// discard.
+        while (chk != checks.end() and chk->is_negative_check()) ++chk;
         if (chk != checks.end() and not ctx->has_error) Diag::Error(
             ctx,
             chk->loc,
