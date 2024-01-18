@@ -11,6 +11,7 @@ using options = clopts< // clang-format off
     multiple<option<"-D", "Define a constant that can be used in 'R' directives">>,
     flag<"-a", "Abort on the first failed check">,
     flag<"-v", "Show more verbose error messages">,
+    flag<"--nobuiltin", "Disable builtin magic variables (e.g. $LINE)">,
     positional<"checkfile", "File containing the check directives", file<>, true>,
     help<>
 >; // clang-format on
@@ -45,6 +46,7 @@ int main(int argc, char** argv) {
         *opts.get<"-D">(),
         opts.get<"-a">(),
         opts.get<"-v">(),
+        not opts.get<"--nobuiltin">(),
     };
 
     return ctx.Run();

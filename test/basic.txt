@@ -263,3 +263,13 @@ Y
 ABC
 aa aaaa
 aa: aa aaaa aaaa:
+
+## The $LINE variable can be used to refer to the current line number.
+## * XYZ
+## re+ $LINE+2
+## re+ $LINE-2
+## re+ $LINE
+XYZ
+271 ## Note $LINE refers to the line containing the *CHECK*
+268
+271

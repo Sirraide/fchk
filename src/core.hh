@@ -266,7 +266,7 @@ struct EnvironmentRegex {
     );
 
     /// Substitute environment variables in the string.
-    auto substitute_vars(const Environment& env) -> std::string;
+    auto substitute_vars(const Context* ctx, Location loc, const Environment& env) -> std::string;
 };
 
 /// A check that needs to be, well, checked.
@@ -344,6 +344,9 @@ class Context {
     /// Print verbose error messages.
     bool verbose;
 
+    /// Enable builtin magic variables.
+    bool enable_builtins;
+
     /// Error flag.
     mutable bool has_error = false;
     mutable bool has_diag = false;
@@ -361,8 +364,12 @@ public:
         std::unordered_set<char> literal_chars,
         std::span<const std::string> defines,
         bool abort_on_error,
-        bool verbose
+        bool verbose,
+        bool enable_builtins
     );
+
+    /// Check if builtins are enabled.
+    [[nodiscard]] bool BuiltinsEnabled() const { return enable_builtins; }
 
     /// Get the location of a string view in a file.
     ///

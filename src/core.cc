@@ -39,6 +39,11 @@ auto utils::NumberWidth(usz number, usz base) -> usz {
 }
 
 namespace {
+/// Check if this is a known builtin.
+constexpr bool IsBuiltin(std::string_view name) {
+    return name == "LINE";
+}
+
 constexpr void TrimFront(std::string_view& sv) {
     while (not sv.empty() and utils::IsWhitespace(sv.front())) sv.remove_prefix(1);
 }
@@ -176,12 +181,14 @@ Context::Context(
     std::unordered_set<char> literal_chars,
     std::span<const std::string> defines,
     bool abort_on_error,
-    bool verbose
+    bool verbose,
+    bool enable_builtins
 ) : check_file{std::move(check), std::move(check_name)},
     default_pragmas(std::move(pragmas)),
     default_literal_chars(std::move(literal_chars)),
     abort_on_error(abort_on_error),
-    verbose(verbose) {
+    verbose(verbose),
+    enable_builtins(enable_builtins) {
     /// Initialise known pragmas.
     if (not default_pragmas.contains("re")) default_pragmas["re"] = false;
     if (not default_pragmas.contains("nocap")) default_pragmas["nocap"] = false;
@@ -368,11 +375,12 @@ EnvironmentRegex::EnvironmentRegex(
     for (;;) {
         auto group_name = s.skip_to("?<").skip(2).read_to_or_empty(">");
         if (s.empty()) break;
+        if (IsBuiltin(group_name)) continue;
         defined_captures.emplace(group_name);
     }
 }
 
-auto EnvironmentRegex::substitute_vars(const Environment& env) -> std::string {
+auto EnvironmentRegex::substitute_vars(const Context* ctx, Location loc, const Environment& env) -> std::string {
     std::string subst;
 
     /// Substitute named captures that are not defined by this RE and
@@ -382,7 +390,38 @@ auto EnvironmentRegex::substitute_vars(const Environment& env) -> std::string {
         static constinit std::array<std::string_view, 2> delims{R"(\k<)", "$"sv};
         static const auto IsCaptureGroupName = [](char c) { return std::isalnum(u8(c)) or c == '_'; };
         const auto Add = [&](std::string_view capture, bool escape) {
-            if (auto var = rgs::find(env, capture, &EnvEntry::name); var != env.end()) {
+            if (ctx->BuiltinsEnabled() and IsBuiltin(capture)) {
+                if (capture == "LINE") {
+                    if (not loc.seekable()) Diag::ICE(ctx, loc, "Cannot evaluate $LINE variable due to invalid source location");
+                    auto lc = loc.seek_line_column();
+
+                    /// Directive may be followed by a '+' or '-' and a number.
+                    if (s.at_any("+-")) {
+                        bool negative = s.at("-");
+                        auto num = s.skip(1).read_while([](char c) { return '0' <= c and c <= '9'; }, true);
+                        isz i;
+                        auto res = std::from_chars(num.begin(), num.end(), i);
+                        if (res.ec != std::error_code{}) throw Regex::Exception(
+                            "Failed to parse $LINE offset '{}': {}",
+                            num,
+                            make_error_code(res.ec).message()
+                        );
+
+                        if (negative) i = -i;
+                        if (i + isz(lc.line) < 1) throw Regex::Exception(
+                            "Line number overflow. Cannot add {} to current line number {}",
+                            i,
+                            lc.line
+                        );
+
+                        lc.line = usz(isz(lc.line) + i);
+                    }
+
+                    subst += std::to_string(lc.line);
+                } else {
+                    Unreachable("Unknown builtin");
+                }
+            } else if (auto var = rgs::find(env, capture, &EnvEntry::name); var != env.end()) {
                 /// Always escape literal variables.
                 if (not escape and not var->literal) subst += var->value;
                 else subst += fmt::format("\\Q{}\\E", var->value);
@@ -812,14 +851,14 @@ class Matcher {
     }
 
     /// Match a regular expression that uses the environment.
-    bool MatchEnvRegex(EnvironmentRegex& re) {
+    bool MatchEnvRegex(Location check_location, EnvironmentRegex& re) {
         /// Ensure defined captures don’t overwrite the ENV.
         for (auto& c : re.defined_captures)
             if (rgs::contains(env, c, &EnvEntry::name))
                 throw RedefError(c);
 
         /// Compile the RE and execute it.
-        Regex expr{re.substitute_vars(env)};
+        Regex expr{re.substitute_vars(ctx, check_location, env)};
         auto res = expr.match(in->text, 0);
         if (not res) return false;
 
@@ -851,7 +890,7 @@ class Matcher {
     bool MatchLine() {
         if (auto s = std::get_if<std::string>(&chk->data)) return in->text.contains(*s);
         else if (auto re = std::get_if<Regex>(&chk->data)) return re->match(in->text);
-        else return MatchEnvRegex(std::get<EnvironmentRegex>(chk->data));
+        else return MatchEnvRegex(chk->loc, std::get<EnvironmentRegex>(chk->data));
     };
 
     /// Skip a line if the next directive is not a directive
@@ -868,6 +907,7 @@ class Matcher {
     }
 
     void Define(std::string_view key, std::string_view value, bool capture) {
+        if (ctx->enable_builtins and IsBuiltin(key)) throw RedefError(std::string{key});
         if (rgs::contains(env, key, &EnvEntry::name)) throw RedefError(std::string{key});
         env.emplace_back(std::string{key}, std::string{value}, capture, in_local_env);
     }
@@ -895,13 +935,32 @@ class Matcher {
                     ctx,
                     chk->loc,
                     "Expands to: {}",
-                    re->substitute_vars(env)
+                    re->substitute_vars(ctx, chk->loc, env)
                 )
                     .no_line();
 
                 /// Separate from the note after it.
                 fmt::print(stderr, "\n");
             }
+        }
+
+        /// If this *isn’t* a regex error, but it contains something that looks
+        /// like it could be a capture, ask the user if that’s what they meant.
+        else if (
+            auto s = std::get_if<std::string>(&chk->data);
+            s and (s->contains("$") or s->contains("\\k<") or s->contains("(?<"))
+        ) {
+            auto dir = chk->dir == Directive::CheckNext    ? Directive::RegexCheckNext
+                     : chk->dir == Directive::CheckAny     ? Directive::RegexCheckAny
+                     : chk->dir == Directive::CheckNotSame ? Directive::RegexCheckNotSame
+                     : chk->dir == Directive::CheckNotNext ? Directive::RegexCheckNotNext
+                                                           : Directive::RegexCheckNotAny;
+            Diag::Note(
+                ctx,
+                chk->loc,
+                "Match contains regex captures, did you mean to use '{}' instead?",
+                DirectiveNames[+dir]
+            ).no_line();
         }
     }
 
@@ -958,7 +1017,16 @@ class Matcher {
 
             case Directive::Undefine: {
                 auto& var = std::get<std::string>(chk->data);
-                if (var == "*") env.clear();
+
+                /// Handle builtins.
+                if (ctx->enable_builtins and IsBuiltin(var)) Diag::Warning(
+                    ctx,
+                    chk->loc,
+                    "Builtin variables cannot be undefined. "
+                    "Pass --nobuiltin to disable them"
+                );
+
+                else if (var == "*") env.clear();
                 else if (auto it = rgs::find(env, var, &EnvEntry::name); it != env.end()) env.erase(it);
                 else Diag::Warning(ctx, chk->loc, "Variable '{}' is not defined", var);
             } break;
@@ -1046,7 +1114,7 @@ class Matcher {
                 }
 
                 else if (auto env_re = std::get_if<EnvironmentRegex>(&chk->data)) {
-                    if (MatchEnvRegex(*env_re)) {
+                    if (MatchEnvRegex(chk->loc, *env_re)) {
                         PrintRegexError("Input contains prohibited string");
                         context.print("In this line");
                     }
@@ -1067,13 +1135,22 @@ class Matcher {
             } catch (const Regex::Exception& e) {
                 Diag::Error(ctx, chk->loc, "Invalid regular expression: {}", e.message);
             } catch (const RedefError& e) {
-                Diag::Error(
-                    ctx,
-                    chk->loc,
-                    "'{}' is already defined. Use 'u {}' to undefine it.",
-                    e.var,
-                    e.var
-                );
+                if (ctx->enable_builtins and IsBuiltin(e.var)) {
+                    Diag::Error(
+                        ctx,
+                        chk->loc,
+                        "Cannot redefine builtin variable '{}'. Pass --nobuiltin to disable builtin variables",
+                        e.var
+                    );
+                } else {
+                    Diag::Error(
+                        ctx,
+                        chk->loc,
+                        "'{}' is already defined. Use 'u {}' to undefine it.",
+                        e.var,
+                        e.var
+                    );
+                }
             }
 
             /// Halt on error if requested.
