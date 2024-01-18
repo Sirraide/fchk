@@ -380,13 +380,33 @@ EnvironmentRegex::EnvironmentRegex(
     }
 }
 
-auto EnvironmentRegex::substitute_vars(const Context* ctx, Location loc, const Environment& env) -> std::string {
+/// Perform variable substitution.
+///
+/// Replace occurrences of variables with their respective values; if
+/// \p re is not null, escape any variables defined by that regex
+/// so we can capture them while matching. If \p re is null, then this
+/// cannot handle variable definitions.
+///
+/// \param ctx The fchk context.
+/// \param loc The location to use for error messages.
+/// \param env The environment to use for variable substitution.
+/// \param input The input string to substitute variables in.
+/// \param [opt] re Associated regex that defines captures.
+/// \throw Regex::Exception If there is an error during substitution.
+/// \return The substituted string.
+auto SubstituteVars(
+    const Context* ctx,
+    Location loc,
+    const Environment& env,
+    std::string_view input,
+    EnvironmentRegex* re = nullptr
+) -> std::string {
     std::string subst;
 
     /// Substitute named captures that are not defined by this RE and
     /// convert dollar-style captures that are to PCRE2-style '\k<name>'
     /// captures.
-    for (Stream s{re_str};;) {
+    for (Stream s{input};;) {
         static constinit std::array<std::string_view, 2> delims{R"(\k<)", "$"sv};
         static const auto IsCaptureGroupName = [](char c) { return std::isalnum(u8(c)) or c == '_'; };
         const auto Add = [&](std::string_view capture, bool escape) {
@@ -422,9 +442,20 @@ auto EnvironmentRegex::substitute_vars(const Context* ctx, Location loc, const E
                     Unreachable("Unknown builtin");
                 }
             } else if (auto var = rgs::find(env, capture, &EnvEntry::name); var != env.end()) {
+                if (not escape and not var->literal) {
+                    /// Handle nested expansions.
+                    if (var->value.contains('$') or var->value.contains("\\k<")) {
+                        /// Nested expansions may not reference captures defined by this RE.
+                        subst += SubstituteVars(ctx, loc, env, var->value, nullptr);
+                    } else {
+                        subst += var->value;
+                    }
+                }
+
                 /// Always escape literal variables.
-                if (not escape and not var->literal) subst += var->value;
-                else subst += fmt::format("\\Q{}\\E", var->value);
+                else {
+                    subst += fmt::format("\\Q{}\\E", var->value);
+                }
             } else {
                 throw Regex::Exception("Undefined capture '{}'", capture);
             }
@@ -443,7 +474,7 @@ auto EnvironmentRegex::substitute_vars(const Context* ctx, Location loc, const E
         if (s.front() == '\\') {
             s.skip(R"(\k<)"sv.size());
             auto name = s.read_while(IsCaptureGroupName, true);
-            if (defined_captures.contains(name)) subst += fmt::format("\\k<{}>", name);
+            if (re and re->defined_captures.contains(name)) subst += fmt::format("\\k<{}>", name);
             else Add(name, false);
             s.skip(">"sv.size());
         }
@@ -458,12 +489,16 @@ auto EnvironmentRegex::substitute_vars(const Context* ctx, Location loc, const E
             }
 
             auto name = s.read_while(IsCaptureGroupName, true);
-            if (defined_captures.contains(name)) subst += fmt::format("\\k<{}>", name);
+            if (re and re->defined_captures.contains(name)) subst += fmt::format("\\k<{}>", name);
             else Add(name, escape);
         }
     }
 
     return subst;
+}
+
+auto EnvironmentRegex::substitute_vars(const Context* ctx, Location loc, const Environment& env) -> std::string {
+    return SubstituteVars(ctx, loc, env, re_str, this);
 }
 
 /// ===========================================================================
@@ -960,7 +995,8 @@ class Matcher {
                 chk->loc,
                 "Match contains regex captures, did you mean to use '{}' instead?",
                 DirectiveNames[+dir]
-            ).no_line();
+            )
+                .no_line();
         }
     }
 
@@ -1005,6 +1041,22 @@ class Matcher {
                 /// Yeet everything defined after the last definition point.
                 std::erase_if(env, &EnvEntry::local);
                 in_local_env = true;
+            } break;
+
+            /// Use an env regex to expand the definition. An undefined variable
+            /// here is an error.
+            case Directive::ExpandDefine: {
+                auto& line = std::get<std::string>(chk->data);
+                Stream s{line};
+                auto name = s.read_to_ws(true);
+                auto value = *s.skip_ws();
+
+                /// Expand vars.
+                try {
+                    Define(name, SubstituteVars(ctx, chk->loc, env, value), false);
+                } catch (const Regex::Exception& e) {
+                    Diag::Error(ctx, chk->loc, "Could not expand '{}': {}", value, e.what());
+                }
             } break;
 
             case Directive::Define: {
@@ -1177,6 +1229,7 @@ public:
     }
 };
 
+static_assert(DirectiveNames.size() == 17, "Update the map below when directives are added");
 static std::unordered_map<std::string_view, Directive> NameDirectiveMap{
     {DirectiveNames[+Directive::CheckAny], Directive::CheckAny},
     {DirectiveNames[+Directive::CheckNext], Directive::CheckNext},
@@ -1190,6 +1243,7 @@ static std::unordered_map<std::string_view, Directive> NameDirectiveMap{
     {DirectiveNames[+Directive::RegexCheckNotNext], Directive::RegexCheckNotNext},
     {DirectiveNames[+Directive::Begin], Directive::Begin},
     {DirectiveNames[+Directive::Define], Directive::Define},
+    {DirectiveNames[+Directive::ExpandDefine], Directive::ExpandDefine},
     {DirectiveNames[+Directive::Undefine], Directive::Undefine},
     {DirectiveNames[+Directive::Pragma], Directive::Pragma},
     {DirectiveNames[+Directive::Prefix], Directive::Prefix},
@@ -1366,8 +1420,10 @@ void Context::CollectDirectives(PrefixState& state) {
                 Add("", d);
                 break;
 
-            /// Value of a define must honour literals at definition time.
-            case Directive::Define: {
+            /// Value of a define must honour literals at definition time. Variables
+            /// for expanded definitions will be substituted at match time instead.
+            case Directive::Define:
+            case Directive::ExpandDefine: {
                 auto text = Stream{value}.fold_ws();
                 SubstituteNoCapAndLiterals(text);
                 Add(text, d);

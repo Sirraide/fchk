@@ -273,3 +273,14 @@ XYZ
 271 ## Note $LINE refers to the line containing the *CHECK*
 268
 271
+
+## To expand variables at definition rather than at substitution time,
+## use the 'e' directive instead of 'd'
+## d line_rel $LINE
+## e line_abs $LINE
+## * XYZ
+## re+ $line_rel
+## re+ $line_abs
+XYZ
+282
+280
