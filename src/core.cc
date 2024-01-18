@@ -399,7 +399,7 @@ auto EnvironmentRegex::substitute_vars(const Context* ctx, Location loc, const E
                     if (s.at_any("+-")) {
                         bool negative = s.at("-");
                         auto num = s.skip(1).read_while([](char c) { return '0' <= c and c <= '9'; }, true);
-                        isz i;
+                        isz i{};
                         auto res = std::from_chars(num.begin(), num.end(), i);
                         if (res.ec != std::error_code{}) throw Regex::Exception(
                             "Failed to parse $LINE offset '{}': {}",
