@@ -336,7 +336,8 @@ bool Regex::match(std::string_view str, u32 flags = 0) const noexcept {
 EnvironmentRegex::EnvironmentRegex(
     std::string pattern,
     std::unordered_set<char> literal_chars,
-    bool captype
+    bool captype,
+    bool builtins_enabled
 ) : re_str(std::move(pattern)),
     literal_chars(std::move(literal_chars)) {
     /// Preprocessing step for typed captures.
@@ -355,8 +356,12 @@ EnvironmentRegex::EnvironmentRegex(
             /// Find ":".
             auto capture = s.read_while([](char c) { return std::isalnum(u8(c)) or c == '_'; }, true);
 
-            /// Got one.
-            if (s.at(":") and (s.skip(1), not s.empty() and not s.at_any(" \t\n\r\f\v"))) {
+            /// Got one. Ignore if this is a builtin.
+            if (
+                (not builtins_enabled or not IsBuiltin(capture)) and
+                s.at(":") and
+                (s.skip(1), not s.empty() and not s.at_any(" \t\n\r\f\v"))
+            ) {
                 auto type = s.read_while([](char c) { return std::isalnum(u8(c)) or c == '_'; }, true);
                 processed += fmt::format("(?<{}>${})", capture, type);
             }
@@ -1544,7 +1549,7 @@ void Context::CollectDirectives(PrefixState& state) {
                     /// Construct an environment regex if captures are used.
                     static constinit std::array<std::string_view, 3> delims{"?<"sv, R"(\k<)", "$"sv};
                     if (Stream{value}.skip_to_any(delims).size() >= 2) {
-                        Add(EnvironmentRegex{expr, state.literal_chars, state.pragmas["captype"]}, d);
+                        Add(EnvironmentRegex{expr, state.literal_chars, state.pragmas["captype"], enable_builtins}, d);
                     } else {
                         Add(Regex{expr}, d);
                     }

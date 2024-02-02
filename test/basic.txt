@@ -284,3 +284,9 @@ XYZ
 XYZ
 282
 280
+
+## Even if the typed captures feature is enabled, ':' is ignored after builtins.
+## * ZZZ
+## re+ $LINE:12
+ZZZ
+290:12

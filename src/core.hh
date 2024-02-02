@@ -262,10 +262,12 @@ struct EnvironmentRegex {
     /// \param pattern The pattern to match.
     /// \param literal_chars Characters to be treated as literal.
     /// \param captype Whether the ‘typed captures’ feature (e.g. $name:type) is enabled.
+    /// \param builtins_enabled Whether builtins are enabled.
     EnvironmentRegex(
         std::string pattern,
         std::unordered_set<char> literal_chars,
-        bool captype
+        bool captype,
+        bool builtins_enabled
     );
 
     /// Substitute environment variables in the string.
