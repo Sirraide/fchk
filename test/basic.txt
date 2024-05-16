@@ -18,7 +18,11 @@
 ##
 ## '%s' *always* designates the current file.
 ##
+## Alternatively, the 'V' directive only runs the command and checks
+## its exit code, echoing its output to stderr on failure.
+##
 ## R sed /^#/d %s
+## V true
 
 ## This text is ignored because it does not resemble a
 ## valid directive, even though it starts with the directive
@@ -270,9 +274,9 @@ aa: aa aaaa aaaa:
 ## re+ $LINE-2
 ## re+ $LINE
 XYZ
-271 ## Note $LINE refers to the line containing the *CHECK*
-268
-271
+275 ## Note $LINE refers to the line containing the *CHECK*
+272
+275
 
 ## To expand variables at definition rather than at substitution time,
 ## use the 'e' directive instead of 'd'
@@ -282,11 +286,11 @@ XYZ
 ## re+ $line_rel
 ## re+ $line_abs
 XYZ
-282
-280
+286
+284
 
 ## Even if the typed captures feature is enabled, ':' is ignored after builtins.
 ## * ZZZ
 ## re+ $LINE:12
 ZZZ
-290:12
+294:12

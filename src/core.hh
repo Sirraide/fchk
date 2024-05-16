@@ -124,7 +124,8 @@ enum struct Directive : u8 {
     Pragma,
     Prefix,
     Run,
-    Count = Run
+    Verify,
+    Count = Verify,
 };
 
 inline constexpr std::array DirectiveToRegexDirective{
@@ -145,6 +146,7 @@ inline constexpr std::array DirectiveToRegexDirective{
     Directive::Pragma,
     Directive::Prefix,
     Directive::Run,
+    Directive::Verify,
 };
 
 inline constexpr std::array DirectiveNames{
@@ -165,6 +167,7 @@ inline constexpr std::array DirectiveNames{
     "p"sv,
     "FCHK-PREFIX"sv,
     "R"sv,
+    "V"sv,
 };
 
 static_assert(
@@ -323,6 +326,7 @@ class Context {
     struct Test {
         std::string_view run_directive;
         PrefixState* state;
+        bool verify_only;
     };
 
     /// Checks
@@ -398,7 +402,7 @@ private:
     auto CreatePrefixState(std::string prefix) -> PrefixState*;
 
     /// Run a test.
-    void RunTest(std::string_view test, PrefixState& state);
+    void RunTest(Test& t);
 };
 
 /// A diagnostic. The diagnostic is issued when the destructor is called.

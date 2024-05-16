@@ -48,6 +48,11 @@ constexpr void TrimFront(std::string_view& sv) {
     while (not sv.empty() and utils::IsWhitespace(sv.front())) sv.remove_prefix(1);
 }
 
+struct ExecutionResult {
+    std::string output;
+    bool success = false;
+};
+
 #ifdef _WIN32
 /// Get error message from last error on Windows.
 auto GetWindowsError() -> std::string {
@@ -70,27 +75,30 @@ auto GetWindowsError() -> std::string {
 }
 #endif
 
-auto GetProcessOutput(std::string_view cmd) -> std::string {
+auto RunCommand(std::string_view cmd) -> ExecutionResult {
 #ifndef _WIN32
     auto pipe = ::popen(cmd.data(), "r");
     if (not pipe) {
         Diag::Error("Failed to run command '{}': {}", cmd, std::strerror(errno));
-        std::exit(1);
+        return {};
     }
 
-    auto output = utils::Drain(pipe);
+    ExecutionResult er;
+    er.output = utils::Drain(pipe);
     auto code = ::pclose(pipe);
     if (not WIFEXITED(code)) {
         Diag::Error("Command '{}' exited abnormally", cmd);
-        std::exit(1);
+        return er;
     }
 
     if (WEXITSTATUS(code) != 0) {
         Diag::Error("Command '{}' exited with status {}", cmd, WEXITSTATUS(code));
-        std::exit(1);
+        return er;
     }
 
-    return output;
+    er.success = true;
+    return er;
+
 #else
     HANDLE pipe_read{}, pipe_write{};
     SECURITY_ATTRIBUTES sa{};
@@ -99,8 +107,10 @@ auto GetProcessOutput(std::string_view cmd) -> std::string {
     sa.lpSecurityDescriptor = nullptr;
 
     /// Create the pipe
-    if (not CreatePipe(&pipe_read, &pipe_write, &sa, 0))
-        Diag::Fatal("Failed to create pipe: {}", GetWindowsError());
+    if (not CreatePipe(&pipe_read, &pipe_write, &sa, 0)) {
+        Diag::Error("Failed to create pipe: {}", GetWindowsError());
+        return {};
+    }
 
     /// Create the child process.
     STARTUPINFO si{};
@@ -126,24 +136,25 @@ auto GetProcessOutput(std::string_view cmd) -> std::string {
         )
     ) {
         Diag::Error("Failed to create process: {}", GetWindowsError());
-        std::exit(1);
+        return {};
     }
 
     /// Close the write end of the pipe.
     CloseHandle(pipe_write);
 
     /// Read the output.
-    std::string output;
+    ExecutionResult er;
     for (;;) {
         static constexpr usz bufsize = 4'096;
-        output.resize(output.size() + bufsize);
+        er.output.resize(er.output.size() + bufsize);
         DWORD read{};
-        if (not ReadFile(pipe_read, output.data() + output.size() - bufsize, bufsize, &read, nullptr)) {
+        if (not ReadFile(pipe_read, er.output.data() + er.output.size() - bufsize, bufsize, &read, nullptr)) {
             if (GetLastError() == ERROR_BROKEN_PIPE) break;
-            Diag::Fatal("Failed to read from pipe: {}", GetWindowsError());
+            Diag::Error("Failed to read from pipe: {}", GetWindowsError());
+            return er;
         }
         if (read == 0) break;
-        output.resize(output.size() - (bufsize - read));
+        er.output.resize(er.output.size() - (bufsize - read));
     }
 
     /// Close the read end of the pipe.
@@ -154,12 +165,14 @@ auto GetProcessOutput(std::string_view cmd) -> std::string {
 
     /// Check its exit code.
     DWORD exit_code{};
-    if (GetExitCodeProcess(pi.hProcess, &exit_code) == FALSE)
-        Diag::Fatal("Failed to get exit code: {}", GetWindowsError());
+    if (GetExitCodeProcess(pi.hProcess, &exit_code) == FALSE) {
+        Diag::Error("Failed to get exit code: {}", GetWindowsError());
+        return er;
+    }
 
     if (exit_code != 0) {
         Diag::Error("Command '{}' exited with status {}", cmd, exit_code);
-        std::exit(1);
+        return er;
     }
 
     /// Close the process and thread handles.
@@ -167,7 +180,8 @@ auto GetProcessOutput(std::string_view cmd) -> std::string {
     CloseHandle(pi.hThread);
 
     /// Done!
-    return output;
+    er.success = true;
+    return er;
 #endif
 }
 
@@ -1040,6 +1054,7 @@ class Matcher {
             case Directive::Prefix:
             case Directive::Run:
             case Directive::Pragma:
+            case Directive::Verify:
                 Unreachable();
 
             case Directive::Begin: {
@@ -1234,7 +1249,7 @@ public:
     }
 };
 
-static_assert(DirectiveNames.size() == 17, "Update the map below when directives are added");
+static_assert(DirectiveNames.size() == 18, "Update the map below when directives are added");
 static std::unordered_map<std::string_view, Directive> NameDirectiveMap{
     {DirectiveNames[+Directive::CheckAny], Directive::CheckAny},
     {DirectiveNames[+Directive::CheckNext], Directive::CheckNext},
@@ -1253,6 +1268,7 @@ static std::unordered_map<std::string_view, Directive> NameDirectiveMap{
     {DirectiveNames[+Directive::Pragma], Directive::Pragma},
     {DirectiveNames[+Directive::Prefix], Directive::Prefix},
     {DirectiveNames[+Directive::Run], Directive::Run},
+    {DirectiveNames[+Directive::Verify], Directive::Verify},
 };
 
 const auto RunWithPrefixDirectiveNameStart = fmt::format("{}[", DirectiveNames[+Directive::Run]);
@@ -1315,9 +1331,9 @@ void Context::CollectDirectives(PrefixState& state) {
             continue;
         }
 
-        /// Regular run directive.
-        if (it->second == Directive::Run) {
-            run_directives.emplace_back(value, &state);
+        /// Run/Verify directives.
+        if (it->second == Directive::Run or it->second == Directive::Verify) {
+            run_directives.emplace_back(value, &state, it->second == Directive::Verify);
             continue;
         }
 
@@ -1402,6 +1418,7 @@ void Context::CollectDirectives(PrefixState& state) {
         switch (it->second) {
             case Directive::Prefix:
             case Directive::Run:
+            case Directive::Verify:
                 Unreachable();
 
             case Directive::CheckAny:
@@ -1608,13 +1625,13 @@ int Context::Run() {
     );
 
     /// Dew it.
-    for (auto& [cmd, state] : run_directives) RunTest(cmd, *state);
+    for (auto& rd : run_directives) RunTest(rd);
     return has_error ? 1 : 0;
 }
 
-void Context::RunTest(std::string_view test, PrefixState& state) {
+void Context::RunTest(Test& test) {
     /// Substitute occurrences of `%s` with the file name.
-    auto cmd = std::string{test};
+    auto cmd = std::string{test.run_directive};
     for (auto& [n, v] : definitions) utils::ReplaceAll(cmd, n, v);
     utils::ReplaceAll(cmd, "%s", check_file.path.string());
 
@@ -1623,7 +1640,7 @@ void Context::RunTest(std::string_view test, PrefixState& state) {
         auto def = Stream{std::string_view(cmd.data() + pos, cmd.size() - pos)}.read_to_ws();
 
         /// Find location of directive in original string.
-        std::string_view def_str = test;
+        std::string_view def_str = test.run_directive;
         if (auto def_pos = def_str.find(def); def_pos != std::string_view::npos)
             def_str = def_str.substr(def_pos, def.size());
 
@@ -1642,6 +1659,16 @@ void Context::RunTest(std::string_view test, PrefixState& state) {
 
     /// Run the command and get its output.
     if (verbose) fmt::print(stderr, "[FCHK] Running command: {}\n", cmd);
-    File input_file{GetProcessOutput(cmd), "<input>"};
-    detail::Matcher::Match(*this, input_file, state.checks);
+    auto res = RunCommand(cmd);
+
+    /// Return early if the command failed.
+    if (not res.success) {
+        fmt::print(stderr, "{}", res.output);
+        std::exit(1);
+    }
+
+    /// In verify mode, there is nothing else to do.
+    if (test.verify_only) return;
+    File input_file{res.output, "<input>"};
+    detail::Matcher::Match(*this, input_file, test.state->checks);
 }
