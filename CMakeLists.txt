@@ -1,5 +1,5 @@
 cmake_minimum_required(VERSION 3.20)
-project(fchk VERSION 3.3.2 LANGUAGES CXX)
+project(fchk VERSION 3.4.0 LANGUAGES CXX)
 
 ## ============================================================================
 ##  Global CMake Variables.
@@ -61,7 +61,6 @@ if (CMAKE_CXX_COMPILER_ID STREQUAL "GNU" OR CMAKE_CXX_COMPILER_ID STREQUAL "Clan
 
         ## Return type.
         -Werror=return-type
-        -Wmissing-noreturn
 
         ## C/C++.
         -Werror=implicit-fallthrough
@@ -172,19 +171,15 @@ if (NOT fmt_FOUND)
 	FetchContent_MakeAvailable(_fchk_fmtlib)
 endif()
 
-## Find clopts.
-include(CheckIncludeFileCXX)
-check_include_file_cxx(clopts.hh HAVE_CLOPTS_HH)
-if (NOT HAVE_CLOPTS_HH)
-	message(STATUS "Clopts not found, downloading ...")
-	FetchContent_Declare(_fchk_clopts
-		GIT_REPOSITORY https://github.com/Sirraide/clopts.git
-		GIT_TAG v2.0.2
-		SOURCE_DIR "${CMAKE_CURRENT_BINARY_DIR}/libs/clopts"
-    )
-	FetchContent_MakeAvailable(_fchk_clopts)
-    target_include_directories(_fchk_options INTERFACE "${CMAKE_CURRENT_BINARY_DIR}/libs/clopts/include")
-endif()
+## Add clopts.
+message(STATUS "Downloading Clopts...")
+FetchContent_Declare(_fchk_clopts
+    GIT_REPOSITORY https://github.com/Sirraide/clopts.git
+    GIT_TAG v2.2.0
+    SOURCE_DIR "${CMAKE_CURRENT_BINARY_DIR}/libs/clopts"
+)
+FetchContent_MakeAvailable(_fchk_clopts)
+target_include_directories(_fchk_options INTERFACE "${CMAKE_CURRENT_BINARY_DIR}/libs/clopts/include")
 
 ## Find PCRE2.
 set(PCRE2_SUPPORT_JIT ON)
@@ -198,6 +193,15 @@ FetchContent_Declare(_fchk_pcre2
 )
 FetchContent_MakeAvailable(_fchk_pcre2)
 
+## Get libassert.
+include(FetchContent)
+FetchContent_Declare(
+  _fchk_libassert
+  GIT_REPOSITORY https://github.com/jeremy-rifkin/libassert.git
+  GIT_TAG        v2.0.2
+)
+FetchContent_MakeAvailable(_fchk_libassert)
+
 ## Suppress warnings for PCRE, otherwise there will be a lot of them
 file(
     GLOB_RECURSE _fchk_pcre2_sources
@@ -206,7 +210,7 @@ file(
 )
 
 ## Link against libfmt.
-target_link_libraries(_fchk_options INTERFACE fmt pcre2-8)
+target_link_libraries(_fchk_options INTERFACE fmt pcre2-8 libassert::assert)
 
 ## ‘src’ should be an include directory.
 target_include_directories(_fchk_options INTERFACE src)
@@ -241,27 +245,43 @@ endif()
 ## ============================================================================
 ##  Executables and libraries.
 ## ============================================================================
-## Everything in ‘src’ is part of the project.
-file(GLOB_RECURSE _fchk_sources src/*.cc src/*.hh)
-
-## As well as everything in ‘include’, if it exists.
-if (EXISTS ${PROJECT_SOURCE_DIR}/include)
-    file(GLOB_RECURSE _fchk_includes include/*.hh)
-    list(APPEND _fchk_sources ${_fchk_includes})
-endif()
-
-## Add the executable.
-add_executable(fchk ${_fchk_sources})
+add_library(fchk-core STATIC src/core.cc src/core.hh src/utils.hh src/errs.hh)
+add_executable(fchk src/main.cc)
 
 ## Project dir so we can strip it from diags.
-target_compile_definitions(fchk PRIVATE
-    FCHK_PROJECT_DIR_NAME="fchk"
-    FCHK_VERSION="${PROJECT_VERSION}"
+target_compile_definitions(fchk-core PUBLIC
+    "FCHK_PROJECT_DIR_NAME=\"fchk\""
+    "FCHK_PROJECT_DIR=\"${PROJECT_SOURCE_DIR}\""
+    "FCHK_VERSION=\"${PROJECT_VERSION}\""
 )
 
 ## Apply our options.
-target_link_libraries(fchk PRIVATE _fchk_options)
+target_link_libraries(fchk-core PRIVATE _fchk_options)
+target_link_libraries(fchk PRIVATE fchk-core _fchk_options)
+target_include_directories(fchk-core PUBLIC src)
 
 ## Automatically provide access to the test discovery feature.
 set(FCHK_EXE_PATH "${CMAKE_RUNTIME_OUTPUT_DIRECTORY}/fchk")
 include("${PROJECT_SOURCE_DIR}/cmake/FCHKDiscoverTests.cmake")
+
+## ============================================================================
+##  Tests.
+## ============================================================================
+if (FCHK_TEST_FCHK)
+    Include(FetchContent)
+
+    FetchContent_Declare(
+      Catch2
+      GIT_REPOSITORY https://github.com/catchorg/Catch2.git
+      GIT_TAG        v3.4.0
+    )
+
+    FetchContent_MakeAvailable(Catch2)
+
+    add_executable(tests test/tests.cc)
+    target_link_libraries(tests PRIVATE fchk-core Catch2::Catch2WithMain _fchk_options)
+
+    include(CTest)
+    include(Catch)
+    catch_discover_tests(tests)
+endif()

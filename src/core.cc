@@ -1,4 +1,5 @@
 #include <core.hh>
+#include <errs.hh>
 #include <fmt/color.h>
 #include <unordered_map>
 
@@ -11,18 +12,20 @@
 #    include <Windows.h>
 #endif
 
-auto utils::Drain(FILE* f) -> std::string {
-    std::string contents;
-    static constexpr usz bufsize = 4'096;
-    for (;;) {
-        contents.resize(contents.size() + bufsize);
-        auto read = std::fread(contents.data() + contents.size() - bufsize, 1, bufsize, f);
-        if (read < bufsize) contents.resize(contents.size() - (bufsize - read));
-        if (std::ferror(f)) Diag::Fatal("Error reading file: {}", std::strerror(errno));
-        if (std::feof(f)) break;
-    }
-    return contents;
-}
+namespace detail {
+using namespace command_line_options;
+using options = clopts< // clang-format off
+    option<"--prefix", "Check prefix to use">,
+    multiple<option<"-l", "Treat character(s) as literal">>,
+    multiple<option<"-P", "Set a pragma">>,
+    multiple<option<"-D", "Define a constant that can be used in 'R' directives">>,
+    flag<"-a", "Abort on the first failed check">,
+    flag<"-v", "Show more verbose error messages">,
+    flag<"--nobuiltin", "Disable builtin magic variables (e.g. $LINE)">,
+    positional<"checkfile", "File containing the check directives", file<>, true>,
+    help<>
+>; // clang-format on
+} // namespace detail
 
 void utils::ReplaceAll(
     std::string& str,
@@ -75,24 +78,34 @@ auto GetWindowsError() -> std::string {
 }
 #endif
 
-auto RunCommand(std::string_view cmd) -> ExecutionResult {
+auto RunCommand(Context& C, Location cmd_loc, std::string_view cmd) -> ExecutionResult {
 #ifndef _WIN32
-    auto pipe = ::popen(cmd.data(), "r");
+    auto pipe = popen(cmd.data(), "r");
     if (not pipe) {
-        Diag::Error("Failed to run command '{}': {}", cmd, std::strerror(errno));
+        C.Error(cmd_loc, "Failed to run command '{}': {}", cmd, std::strerror(errno));
         return {};
     }
 
     ExecutionResult er;
-    er.output = utils::Drain(pipe);
-    auto code = ::pclose(pipe);
+    static constexpr usz bufsize = 4'096;
+    for (;;) {
+        er.output.resize(er.output.size() + bufsize);
+        auto read = std::fread(er.output.data() + er.output.size() - bufsize, 1, bufsize, pipe);
+        if (read < bufsize) er.output.resize(er.output.size() - (bufsize - read));
+        if (std::ferror(pipe)) {
+            C.Error(cmd_loc, "Error reading file: {}", std::strerror(errno));
+            return er;
+        }
+        if (std::feof(pipe)) break;
+    }
+    auto code = pclose(pipe);
     if (not WIFEXITED(code)) {
-        Diag::Error("Command '{}' exited abnormally", cmd);
+        C.Error(cmd_loc, "Command '{}' exited abnormally", cmd);
         return er;
     }
 
     if (WEXITSTATUS(code) != 0) {
-        Diag::Error("Command '{}' exited with status {}", cmd, WEXITSTATUS(code));
+        C.Error(cmd_loc, "Command '{}' exited with status {}", cmd, WEXITSTATUS(code));
         return er;
     }
 
@@ -108,7 +121,7 @@ auto RunCommand(std::string_view cmd) -> ExecutionResult {
 
     /// Create the pipe
     if (not CreatePipe(&pipe_read, &pipe_write, &sa, 0)) {
-        Diag::Error("Failed to create pipe: {}", GetWindowsError());
+        C.Error(cmd_loc, "Failed to create pipe: {}", GetWindowsError());
         return {};
     }
 
@@ -135,7 +148,7 @@ auto RunCommand(std::string_view cmd) -> ExecutionResult {
             &pi
         )
     ) {
-        Diag::Error("Failed to create process: {}", GetWindowsError());
+        C.Error(cmd_loc, "Failed to create process: {}", GetWindowsError());
         return {};
     }
 
@@ -150,7 +163,7 @@ auto RunCommand(std::string_view cmd) -> ExecutionResult {
         DWORD read{};
         if (not ReadFile(pipe_read, er.output.data() + er.output.size() - bufsize, bufsize, &read, nullptr)) {
             if (GetLastError() == ERROR_BROKEN_PIPE) break;
-            Diag::Error("Failed to read from pipe: {}", GetWindowsError());
+            C.Error(cmd_loc, "Failed to read from pipe: {}", GetWindowsError());
             return er;
         }
         if (read == 0) break;
@@ -166,12 +179,12 @@ auto RunCommand(std::string_view cmd) -> ExecutionResult {
     /// Check its exit code.
     DWORD exit_code{};
     if (GetExitCodeProcess(pi.hProcess, &exit_code) == FALSE) {
-        Diag::Error("Failed to get exit code: {}", GetWindowsError());
+        C.Error(cmd_loc, "Failed to get exit code: {}", GetWindowsError());
         return er;
     }
 
     if (exit_code != 0) {
-        Diag::Error("Command '{}' exited with status {}", cmd, exit_code);
+        C.Error(cmd_loc, "Command '{}' exited with status {}", cmd, exit_code);
         return er;
     }
 
@@ -188,6 +201,7 @@ auto RunCommand(std::string_view cmd) -> ExecutionResult {
 } // namespace
 
 Context::Context(
+    std::shared_ptr<DiagsHandler> dh,
     std::string check,
     fs::path check_name,
     std::string prefix,
@@ -197,7 +211,8 @@ Context::Context(
     bool abort_on_error,
     bool verbose,
     bool enable_builtins
-) : check_file{std::move(check), std::move(check_name)},
+) : dh{std::move(dh)},
+    check_file{std::move(check), std::move(check_name)},
     default_pragmas(std::move(pragmas)),
     default_literal_chars(std::move(literal_chars)),
     abort_on_error(abort_on_error),
@@ -214,7 +229,7 @@ Context::Context(
     /// Save definitions.
     for (auto& d : defines) {
         auto eq = d.find('=');
-        if (eq == std::string::npos) Diag::Fatal("Syntax of '-D' option is '-D name=value'", d);
+        if (eq == std::string::npos) Error(Location(), ERR_DRV_D_OPT_INVALID);
         definitions["%" + d.substr(0, eq)] = d.substr(eq + 1);
     }
 }
@@ -291,7 +306,7 @@ Regex::~Regex() noexcept {
     pcre2_match_data_free(static_cast<pcre2_match_data*>(data_ptr));
 }
 
-Regex::Regex(std::string_view pattern) {
+Regex::Regex(Context& C, std::string_view pattern) {
     int err{};
     usz erroffs{};
     auto expr = pcre2_compile(
@@ -313,8 +328,8 @@ Regex::Regex(std::string_view pattern) {
             buffer.size()
         );
 
-        if (sz == PCRE2_ERROR_BADDATA) Diag::Warning("PCRE error code is invalid");
-        else if (sz == PCRE2_ERROR_NOMEMORY) Diag::Warning("PCRE error buffer is too small to accommodate error message");
+        if (sz == PCRE2_ERROR_BADDATA) C.Warning(Location(), "PCRE error code is invalid");
+        else if (sz == PCRE2_ERROR_NOMEMORY) C.Warning(Location(), "PCRE error buffer is too small to accommodate error message");
         else buffer.resize(usz(sz));
         throw Exception("{}", std::move(buffer));
     }
@@ -406,7 +421,7 @@ EnvironmentRegex::EnvironmentRegex(
 /// so we can capture them while matching. If \p re is null, then this
 /// cannot handle variable definitions.
 ///
-/// \param ctx The fchk context.
+/// \param C The fchk context.
 /// \param loc The location to use for error messages.
 /// \param env The environment to use for variable substitution.
 /// \param input The input string to substitute variables in.
@@ -414,7 +429,7 @@ EnvironmentRegex::EnvironmentRegex(
 /// \throw Regex::Exception If there is an error during substitution.
 /// \return The substituted string.
 auto SubstituteVars(
-    const Context* ctx,
+    Context& C,
     Location loc,
     const Environment& env,
     std::string_view input,
@@ -429,12 +444,14 @@ auto SubstituteVars(
         static constinit std::array<std::string_view, 2> delims{R"(\k<)", "$"sv};
         static const auto IsCaptureGroupName = [](char c) { return std::isalnum(u8(c)) or c == '_'; };
         const auto Add = [&](std::string_view capture, bool escape) {
-            if (ctx->BuiltinsEnabled() and IsBuiltin(capture)) {
+            if (C.BuiltinsEnabled() and IsBuiltin(capture)) {
                 if (capture == "LINE") {
-                    if (not loc.seekable()) Diag::ICE(ctx, loc, "Cannot evaluate $LINE variable due to invalid source location");
-                    auto lc = loc.seek_line_column();
+                    if (not loc.seekable()) throw Regex::Exception(
+                        "Cannot evaluate $LINE variable due to invalid source location"
+                    );
 
                     /// Directive may be followed by a '+' or '-' and a number.
+                    auto lc = loc.seek_line_column();
                     if (s.at_any("+-")) {
                         bool negative = s.at("-");
                         auto num = s.skip(1).read_while([](char c) { return '0' <= c and c <= '9'; }, true);
@@ -465,7 +482,7 @@ auto SubstituteVars(
                     /// Handle nested expansions.
                     if (var->value.contains('$') or var->value.contains("\\k<")) {
                         /// Nested expansions may not reference captures defined by this RE.
-                        subst += SubstituteVars(ctx, loc, env, var->value, nullptr);
+                        subst += SubstituteVars(C, loc, env, var->value, nullptr);
                     } else {
                         subst += var->value;
                     }
@@ -516,7 +533,7 @@ auto SubstituteVars(
     return subst;
 }
 
-auto EnvironmentRegex::substitute_vars(const Context* ctx, Location loc, const Environment& env) -> std::string {
+auto EnvironmentRegex::substitute_vars(Context& ctx, Location loc, const Environment& env) -> std::string {
     return SubstituteVars(ctx, loc, env, re_str, this);
 }
 
@@ -525,118 +542,36 @@ auto EnvironmentRegex::substitute_vars(const Context* ctx, Location loc, const E
 /// ===========================================================================
 namespace {
 /// Get the colour of a diagnostic.
-constexpr auto Colour(Diag::Kind kind) {
-    using Kind = Diag::Kind;
+constexpr auto Colour(DiagsHandler::Kind kind) {
+    using Kind = DiagsHandler::Kind;
     switch (kind) {
-        case Kind::ICError: return fmt::fg(fmt::terminal_color::magenta) | fmt::emphasis::bold;
-        case Kind::Warning: return fmt::fg(fmt::terminal_color::yellow) | fmt::emphasis::bold;
-        case Kind::Note: return fmt::fg(fmt::terminal_color::green) | fmt::emphasis::bold;
-
-        case Kind::FError:
-        case Kind::Error:
-            return fmt::fg(fmt::terminal_color::red) | fmt::emphasis::bold;
-
-        default:
-            return fmt::text_style{};
+        case Kind::Warning: return fg(fmt::terminal_color::yellow) | fmt::emphasis::bold;
+        case Kind::Note: return fg(fmt::terminal_color::green) | fmt::emphasis::bold;
+        case Kind::Error: return fg(fmt::terminal_color::red) | fmt::emphasis::bold;
+        default: return fmt::text_style{};
     }
 }
 
 /// Get the name of a diagnostic.
-constexpr std::string_view Name(Diag::Kind kind) {
-    using Kind = Diag::Kind;
+constexpr std::string_view Name(DiagsHandler::Kind kind) {
+    using Kind = DiagsHandler::Kind;
     switch (kind) {
-        case Kind::ICError: return "Internal Compiler Error";
-        case Kind::FError: return "Fatal Error";
         case Kind::Error: return "Error";
         case Kind::Warning: return "Warning";
         case Kind::Note: return "Note";
         default: return "Diagnostic";
     }
 }
-
-auto NormaliseFilename(std::string_view filename) -> std::string_view {
-    if (auto pos = filename.find(FCHK_PROJECT_DIR_NAME); pos != std::string_view::npos) {
-        static constexpr std::string_view name{FCHK_PROJECT_DIR_NAME};
-        filename.remove_prefix(pos + name.size() + 1);
-    }
-    return filename;
-}
-
 } // namespace
 
-/// Abort due to assertion failure.
-void detail::AssertFail(
-    AssertKind k,
-    std::string_view condition,
-    std::string_view file,
-    int line,
-    std::string&& message
-) {
+void DiagsHandler::report_impl(Context* ctx, Kind kind, Location where, std::string_view msg, bool no_line) {
     using fmt::fg;
     using enum fmt::emphasis;
     using enum fmt::terminal_color;
-
-    /// Print filename and ICE title.
-    fmt::print(stderr, bold, "{}:{}:", file, line);
-    fmt::print(stderr, Colour(Diag::Kind::ICError), " {}: ", Name(Diag::Kind::ICError));
-
-    /// Print the condition, if any.
-    switch (k) {
-        case AssertKind::AK_Assert:
-            fmt::print(stderr, "Assertion failed: '{}'", condition);
-            break;
-
-        case AssertKind::AK_Todo:
-            fmt::print(stderr, "TODO");
-            break;
-
-        case AssertKind::AK_Unreachable:
-            fmt::print(stderr, "Unreachable code reached");
-            break;
-    }
-
-    /// Print the message.
-    if (not message.empty()) fmt::print(stderr, ": {}", message);
-    fmt::print("\n");
-
-    /// Print the backtrace and exit.
-    std::exit(Diag::ICEExitCode);
-}
-
-void Diag::HandleFatalErrors() {
-    /// Abort on ICE.
-    if (kind == Kind::ICError)
-        std::exit(ICEExitCode);
-
-    /// Exit on a fatal error.
-    if (kind == Kind::FError)
-        std::exit(FatalExitCode); /// Separate line so we can put a breakpoint here.
-}
-
-/// Print a diagnostic with no (valid) location info.
-void Diag::PrintDiagWithoutLocation() {
-    /// Print the message.
-    fmt::print(stderr, Colour(kind), "{}: ", Name(kind));
-    fmt::print(stderr, "{}\n", msg);
-    HandleFatalErrors();
-}
-
-Diag::~Diag() { print(); }
-
-void Diag::print() {
-    using fmt::fg;
-    using enum fmt::emphasis;
-    using enum fmt::terminal_color;
-
-    /// If this diagnostic is suppressed, do nothing.
-    if (kind == Kind::None) return;
-
-    /// Don’t print the same diagnostic twice.
-    defer { kind = Kind::None; };
 
     /// Separate error messages w/ an empty line.
     if (ctx) {
-        if (kind != Kind::Note and ctx->has_diag) fmt::print(stderr, "\n");
+        if (kind != Kind::Note and ctx->has_diag) print("\n");
         ctx->has_diag = true;
     }
 
@@ -644,21 +579,16 @@ void Diag::print() {
     if (kind == Kind::Error and ctx)
         ctx->has_error = true; /// Separate line so we can put a breakpoint here.
 
-    /// If there is no context, then there is also no location info.
-    if (not ctx) {
-        PrintDiagWithoutLocation();
-        return;
-    }
-
     /// If the location is invalid, either because the specified file does not
     /// exists, its position is out of bounds or 0, or its length is 0, then we
     /// skip printing the location.
     if (not where.seekable()) {
         /// Even if the location is invalid, print the file name if we can.
-        if (where.file) fmt::print(stderr, bold, "{}: ", where.file->path.string());
+        if (where.file) write(fmt::format(bold, "{}: ", where.file->path.string()));
 
         /// Print the message.
-        PrintDiagWithoutLocation();
+        write(fmt::format(Colour(kind), "{}: ", Name(kind)));
+        print("{}\n", msg);
         return;
     }
 
@@ -680,48 +610,47 @@ void Diag::print() {
     utils::ReplaceAll(after, "\t", "    ");
 
     /// Print the file name, line number, and column number.
-    fmt::print(stderr, bold, "{}:{}:{}: ", where.file->path.string(), line, col);
+    write(fmt::format(bold, "{}:{}:{}: ", where.file->path.string(), line, col));
 
     /// Print the diagnostic name and message.
-    fmt::print(stderr, Colour(kind), "{}: ", Name(kind));
-    fmt::print(stderr, "{}\n", msg);
+    write(fmt::format(Colour(kind), "{}: ", Name(kind)));
+    print("{}\n", msg);
 
-    /// Print the line, if requested.
-    if (print_line) {
-        /// Print the line up to the start of the location, the range in the right
-        /// colour, and the rest of the line.
-        fmt::print(stderr, " {} │ {}", line, before);
-        fmt::print(stderr, Colour(kind), "{}", range);
-        fmt::print(stderr, "{}\n", after);
+    /// Print the line up to the start of the location, the range in the right
+    /// colour, and the rest of the line.
+    if (no_line) return;
+    print(" {} │ {}", line, before);
+    write(fmt::format(Colour(kind), "{}", range));
+    print("{}\n", after);
 
-        /// Determine the number of digits in the line number.
-        const auto digits = utils::NumberWidth(line);
+    /// Determine the number of digits in the line number.
+    const auto digits = utils::NumberWidth(line);
 
-        /// Determine the column width of the text.
-        static const auto ColumnWidth = [](std::string_view text) {
-            usz wd = 0;
-            for (auto c : text) {
-                if (std::iscntrl(c)) continue;
-                else if (c == '\t') wd += 4;
-                else wd++;
-            }
-            return wd;
-        };
+    /// Determine the column width of the text.
+    static const auto ColumnWidth = [](std::string_view text) {
+        usz wd = 0;
+        for (auto c : text) {
+            if (std::iscntrl(c)) continue;
+            if (c == '\t') wd += 4;
+            else wd++;
+        }
+        return wd;
+    };
 
-        /// Underline the range. For that, we first pad the line based on the number
-        /// of digits in the line number and append more spaces to line us up with
-        /// the range.
-        for (usz i = 0, end = digits + ColumnWidth(before) + sizeof("  | ") - 1; i < end; i++)
-            fmt::print(stderr, " ");
+    /// Underline the range. For that, we first pad the line based on the number
+    /// of digits in the line number and append more spaces to line us up with
+    /// the range.
+    for (usz i = 0, end = digits + ColumnWidth(before) + sizeof("  | ") - 1; i < end; i++)
+        print(" ");
 
-        /// Finally, underline the range.
-        for (usz i = 0, end = ColumnWidth(range); i < end; i++)
-            fmt::print(stderr, Colour(kind), "~");
-        fmt::print(stderr, "\n");
-    }
+    /// Finally, underline the range.
+    for (usz i = 0, end = ColumnWidth(range); i < end; i++)
+        write(fmt::format(Colour(kind), "~"));
+    print("\n");
+}
 
-    /// Handle fatal errors.
-    HandleFatalErrors();
+void DiagsHandler::write(std::string_view text) {
+    fmt::print(stderr, "{}", text);
 }
 
 /// ===========================================================================
@@ -851,7 +780,7 @@ class Matcher {
         Location loc;
     };
 
-    Context* const ctx;
+    Context* const C;
     [[maybe_unused]] File& input_file;
     std::span<Check> checks;
     std::vector<Line> input_lines;
@@ -864,34 +793,34 @@ class Matcher {
 
     /// For providing context around a line in error messages.
     struct LineContext {
-        Matcher& m;
-        decltype(in) it = m.in, prev = m.prev;
+        Matcher& M;
+        decltype(in) it = M.in, prev = M.prev;
 
         void print(std::string_view msg) const {
             /// Print the message w/o the code line.
-            Diag::Note(m.ctx, it->loc, "{}", msg).no_line();
+            M.C->Note(it->loc, "{}", msg);
 
             /// Print only a couple of lines so we don’t dump 2000 lines of output
             /// if the input is long. We start printing one line before the one we
             /// started matching from;
             const auto lc = it->loc.seek_line_column();
             const auto start = lc.line == 1 ? 1 : lc.line - 1;
-            for (auto [i, line] : vws::enumerate(rgs::subrange{prev, m.input_lines.end()})) {
+            for (auto [i, line] : vws::enumerate(rgs::subrange{prev, M.input_lines.end()})) {
                 static constexpr usz max_lines = 7;
                 if (usz(i) >= max_lines) break;
-                fmt::print(stderr, " {: >{}} │ ", start + usz(i), utils::NumberWidth(start + max_lines - 1));
-                if (i == 1 - (lc.line == 1)) fmt::print(stderr, "\033[1;32m{}\n\033[m", line.text.empty() ? "<empty>" : line.text);
-                else fmt::print(stderr, "{}\n", line.text);
+                M.C->dh->print(" {: >{}} │ ", start + usz(i), utils::NumberWidth(start + max_lines - 1));
+                if (i == 1 - (lc.line == 1)) M.C->dh->print("\033[1;32m{}\n\033[m", line.text.empty() ? "<empty>" : line.text);
+                else M.C->dh->print("{}\n", line.text);
             }
-        };
+        }
 
         void restore() {
-            m.in = it;
-            m.prev = prev;
+            M.in = it;
+            M.prev = prev;
         }
     };
 
-    Matcher(Context& ctx, File& input_file, std::span<Check> checks) : ctx{&ctx}, input_file{input_file}, checks{checks} {
+    Matcher(Context& ctx, File& input_file, std::span<Check> checks) : C{&ctx}, input_file{input_file}, checks{checks} {
         const auto ProcessLine = [&](auto&& r) -> Line {
             auto sv = std::string_view{&*r.begin(), usz(rgs::distance(r))};
             return {Stream{sv}.fold_ws(), ctx.LocationIn(sv, input_file)};
@@ -912,16 +841,16 @@ class Matcher {
                 throw RedefError(c);
 
         /// Compile the RE and execute it.
-        Regex expr{re.substitute_vars(ctx, check_location, env)};
+        Regex expr{*C, re.substitute_vars(*C, check_location, env)};
         auto res = expr.match(in->text, 0);
         if (not res) return false;
 
         /// If the RE matches, extract the captures.
-        auto data = reinterpret_cast<pcre2_match_data*>(expr.data());
+        auto data = static_cast<pcre2_match_data*>(expr.data());
         auto ov = pcre2_get_ovector_pointer(data);
         for (const auto& name : re.defined_captures) {
             auto code = pcre2_substring_number_from_name(
-                reinterpret_cast<pcre2_code*>(expr.ptr()),
+                static_cast<pcre2_code*>(expr.ptr()),
                 reinterpret_cast<PCRE2_SPTR>(name.data())
             );
 
@@ -938,14 +867,14 @@ class Matcher {
     void NextLine() {
         prev = in;
         ++in;
-    };
+    }
 
     /// Match a line.
     bool MatchLine() {
         if (auto s = std::get_if<std::string>(&chk->data)) return in->text.contains(*s);
-        else if (auto re = std::get_if<Regex>(&chk->data)) return re->match(in->text);
-        else return MatchEnvRegex(chk->loc, std::get<EnvironmentRegex>(chk->data));
-    };
+        if (auto re = std::get_if<Regex>(&chk->data)) return re->match(in->text);
+        return MatchEnvRegex(chk->loc, std::get<EnvironmentRegex>(chk->data));
+    }
 
     /// Skip a line if the next directive is not a directive
     /// that does not advance the line pointer.
@@ -961,7 +890,7 @@ class Matcher {
     }
 
     void Define(std::string_view key, std::string_view value, bool capture) {
-        if (ctx->enable_builtins and IsBuiltin(key)) throw RedefError(std::string{key});
+        if (C->enable_builtins and IsBuiltin(key)) throw RedefError(std::string{key});
         if (rgs::contains(env, key, &EnvEntry::name)) throw RedefError(std::string{key});
         env.emplace_back(std::string{key}, std::string{value}, capture, in_local_env);
     }
@@ -969,7 +898,7 @@ class Matcher {
     /// Issue an error at the current position and print the environment
     /// if the current directive is a regex directive and it is not empty.
     void PrintRegexError(std::string_view msg) {
-        Diag::Error(ctx, chk->loc, "{}", msg);
+        C->Error(chk->loc, "{}", msg);
         if (
             chk->dir == Directive::RegexCheckAny or
             chk->dir == Directive::RegexCheckNext or
@@ -978,23 +907,21 @@ class Matcher {
             chk->dir == Directive::RegexCheckNotNext
         ) {
             if (env.empty()) return;
-            if (ctx->verbose) {
+            if (C->verbose) {
                 auto env_strs = env | vws::transform([](auto&& p) { return fmt::format("{} = {}", p.name, p.value); });
-                Diag::Note(ctx, chk->loc, "With env: [\n    {}\n]\n", fmt::join(env_strs, "\n    ")).no_line();
+                C->NoteNoLine(chk->loc, "With env: [\n    {}\n]\n", fmt::join(env_strs, "\n    "));
             }
 
             /// Print expansion of regex that contains captures.
             if (auto re = std::get_if<EnvironmentRegex>(&chk->data)) {
-                Diag::Note(
-                    ctx,
+                C->NoteNoLine(
                     chk->loc,
                     "Expands to: {}",
-                    re->substitute_vars(ctx, chk->loc, env)
-                )
-                    .no_line();
+                    re->substitute_vars(*C, chk->loc, env)
+                );
 
                 /// Separate from the note after it.
-                fmt::print(stderr, "\n");
+                C->dh->print("\n");
             }
         }
 
@@ -1009,13 +936,11 @@ class Matcher {
                      : chk->dir == Directive::CheckNotSame ? Directive::RegexCheckNotSame
                      : chk->dir == Directive::CheckNotNext ? Directive::RegexCheckNotNext
                                                            : Directive::RegexCheckNotAny;
-            Diag::Note(
-                ctx,
+            C->NoteNoLine(
                 chk->loc,
                 "Match contains regex captures, did you mean to use '{}' instead?",
                 DirectiveNames[+dir]
-            )
-                .no_line();
+            );
         }
     }
 
@@ -1031,7 +956,7 @@ class Matcher {
                 case Directive::RegexCheckNext:
                 case Directive::CheckNotNext:
                 case Directive::RegexCheckNotNext:
-                    chk++;
+                    ++chk;
             }
         }
     }
@@ -1073,9 +998,9 @@ class Matcher {
 
                 /// Expand vars.
                 try {
-                    Define(name, SubstituteVars(ctx, chk->loc, env, value), false);
+                    Define(name, SubstituteVars(*C, chk->loc, env, value), false);
                 } catch (const Regex::Exception& e) {
-                    Diag::Error(ctx, chk->loc, "Could not expand '{}': {}", value, e.what());
+                    C->Error(chk->loc, "Could not expand '{}': {}", value, e.what());
                 }
             } break;
 
@@ -1091,8 +1016,7 @@ class Matcher {
                 auto& var = std::get<std::string>(chk->data);
 
                 /// Handle builtins.
-                if (ctx->enable_builtins and IsBuiltin(var)) Diag::Warning(
-                    ctx,
+                if (C->enable_builtins and IsBuiltin(var)) C->Warning(
                     chk->loc,
                     "Builtin variables cannot be undefined. "
                     "Pass --nobuiltin to disable them"
@@ -1100,7 +1024,7 @@ class Matcher {
 
                 else if (var == "*") env.clear();
                 else if (auto it = rgs::find(env, var, &EnvEntry::name); it != env.end()) env.erase(it);
-                else Diag::Warning(ctx, chk->loc, "Variable '{}' is not defined", var);
+                else C->Warning(chk->loc, "Variable '{}' is not defined", var);
             } break;
 
             /// Check that any of the following lines matches.
@@ -1169,7 +1093,7 @@ class Matcher {
             /// Check that this line does not match.
             case Directive::CheckNotSame: {
                 if (in->text.contains(std::get<std::string>(chk->data))) {
-                    Diag::Error(ctx, chk->loc, "Input contains prohibited string");
+                    C->Error(chk->loc, "Input contains prohibited string");
                     context.print("In this line");
                 }
 
@@ -1180,7 +1104,7 @@ class Matcher {
             case Directive::RegexCheckNotSame: {
                 if (auto re = std::get_if<Regex>(&chk->data)) {
                     if (re->match(in->text, 0)) {
-                        Diag::Error(ctx, chk->loc, "Input contains prohibited string");
+                        C->Error(chk->loc, "Input contains prohibited string");
                         context.print("In this line");
                     }
                 }
@@ -1205,18 +1129,16 @@ class Matcher {
             try {
                 Step();
             } catch (const Regex::Exception& e) {
-                Diag::Error(ctx, chk->loc, "Invalid regular expression: {}", e.message);
+                C->Error(chk->loc, "Invalid regular expression: {}", e.message);
             } catch (const RedefError& e) {
-                if (ctx->enable_builtins and IsBuiltin(e.var)) {
-                    Diag::Error(
-                        ctx,
+                if (C->enable_builtins and IsBuiltin(e.var)) {
+                    C->Error(
                         chk->loc,
                         "Cannot redefine builtin variable '{}'. Pass --nobuiltin to disable builtin variables",
                         e.var
                     );
                 } else {
-                    Diag::Error(
-                        ctx,
+                    C->Error(
                         chk->loc,
                         "'{}' is already defined. Use 'u {}' to undefine it.",
                         e.var,
@@ -1226,7 +1148,7 @@ class Matcher {
             }
 
             /// Halt on error if requested.
-            if (ctx->has_error and ctx->abort_on_error) std::exit(1);
+            if (C->has_error and C->abort_on_error) return;
 
             /// Take care not to go out of bounds here.
             if (chk == checks.end()) return;
@@ -1236,8 +1158,7 @@ class Matcher {
         /// except if the checks are negative checks, which we can simply
         /// discard.
         while (chk != checks.end() and chk->is_negative_check()) ++chk;
-        if (chk != checks.end() and not ctx->has_error) Diag::Error(
-            ctx,
+        if (chk != checks.end() and not C->has_error) C->Error(
             chk->loc,
             "End of file reached looking for string"
         );
@@ -1322,8 +1243,7 @@ void Context::CollectDirectives(PrefixState& state) {
         /// Handle spurious prefix directives
         if (it->second == Directive::Prefix) {
             /// Overriding the prefix is not allowed anymore.
-            if (state.prefix != value) Diag::Warning(
-                this,
+            if (state.prefix != value) Warning(
                 LocationIn(dir, check_file),
                 "Conflicting prefix directive ignored (current prefix is '{}')",
                 state.prefix
@@ -1453,7 +1373,11 @@ void Context::CollectDirectives(PrefixState& state) {
 
             /// Handle pragmas.
             case Directive::Pragma: {
-                if (value.empty()) Diag::Fatal("'p' directive requires an argument");
+                if (value.empty()) {
+                    Error(LocationIn(value, check_file), "'p' directive requires an argument");
+                    continue;
+                }
+
                 auto s = Stream{value};
                 auto name = s.read_to_ws(true);
                 auto arg = s.skip_ws().read_to_ws(true);
@@ -1462,8 +1386,7 @@ void Context::CollectDirectives(PrefixState& state) {
                 if (name == "lit" or name == "nolit") {
                     /// No-op if no chars were provided
                     if (arg.empty()) {
-                        Diag::Warning(
-                            this,
+                        Warning(
                             LocationIn(arg, check_file),
                             "Empty '{}' pragma ignored",
                             name
@@ -1473,16 +1396,14 @@ void Context::CollectDirectives(PrefixState& state) {
                     }
 
                     /// Making backslashes literal would break things.
-                    if (name == "lit" and arg.contains('\\')) Diag::Error(
-                        this,
+                    if (name == "lit" and arg.contains('\\')) Error(
                         LocationIn(arg, check_file),
                         "Escape character '\\' cannot be made literal",
                         name
                     );
 
                     /// Warn about '(' and ')'.
-                    if (arg.contains('(') or arg.contains(')')) Diag::Warning(
-                        this,
+                    if (arg.contains('(') or arg.contains(')')) Warning(
                         LocationIn(arg, check_file),
                         "Prefer using 'p nocap' over making '(' or ')' (not) literal "
                         "as the latter can cause the regex engine to error."
@@ -1492,8 +1413,7 @@ void Context::CollectDirectives(PrefixState& state) {
                     /// 'o' and 'f' are not metacharacters anyway, passing 'off' to this
                     /// wouldn’t to anything even if we accepted it.
                     if (arg == "off") {
-                        Diag::Warning(
-                            this,
+                        Warning(
                             LocationIn(arg, check_file),
                             "Syntax of '{}' pragma is 'p {} <chars>'",
                             name,
@@ -1521,18 +1441,13 @@ void Context::CollectDirectives(PrefixState& state) {
                 else {
                     /// Ignore unknown pragmas.
                     if (not state.pragmas.contains(name)) {
-                        Diag::Warning(
-                            this,
-                            LocationIn(name, check_file),
-                            "Unknown pragma ignored"
-                        );
+                        Warning(LocationIn(name, check_file), "Unknown pragma ignored");
 
                         continue;
                     }
 
                     /// Pragmas take an optional ‘off’ parameter.
-                    if (not arg.empty() and arg != "off") Diag::Warning(
-                        this,
+                    if (not arg.empty() and arg != "off") Warning(
                         LocationIn(arg, check_file),
                         "Unknown pragma argument ignored"
                     );
@@ -1542,8 +1457,7 @@ void Context::CollectDirectives(PrefixState& state) {
                 }
 
                 /// Warn about junk.
-                if (not s.skip_ws().empty()) Diag::Warning(
-                    this,
+                if (not s.skip_ws().empty()) Warning(
                     LocationIn(*s, check_file),
                     "Junk at end of pragma ignored"
                 );
@@ -1568,11 +1482,10 @@ void Context::CollectDirectives(PrefixState& state) {
                     if (Stream{value}.skip_to_any(delims).size() >= 2) {
                         Add(EnvironmentRegex{expr, state.literal_chars, state.pragmas["captype"], enable_builtins}, d);
                     } else {
-                        Add(Regex{expr}, d);
+                        Add(Regex{*this, expr}, d);
                     }
                 } catch (const Regex::Exception& e) {
-                    Diag::Error(
-                        this,
+                    Error(
                         LocationIn(value, check_file),
                         "Invalid regular expression: {}",
                         e.message
@@ -1606,7 +1519,8 @@ int Context::Run() {
                 .read_to("\n")
         );
 
-        if (states_by_prefix[0].prefix.empty()) Diag::Fatal(
+        if (states_by_prefix[0].prefix.empty()) Error(
+            Location(),
             "No prefix provided and no {} directive found in check file",
             DirectiveNames[+Directive::Prefix]
         );
@@ -1615,18 +1529,70 @@ int Context::Run() {
     /// Collect check directives.
     CollectDirectives(states_by_prefix[0]);
 
-    /// Don’t even bother matching if there was an error.
-    if (has_error) return 1;
-
     /// Can’t check anything w/ no directives.
-    if (run_directives.empty()) Diag::Fatal(
+    if (run_directives.empty()) Error(
+        Location(),
         "No {} directives found in check file!",
         DirectiveNames[+Directive::Run]
     );
 
+    /// Don’t even bother matching if there was an error.
+    if (has_error) return 1;
+
     /// Dew it.
-    for (auto& rd : run_directives) RunTest(rd);
+    for (auto& rd : run_directives) {
+        RunTest(rd);
+        if (has_error and abort_on_error) break;
+    }
+
     return has_error ? 1 : 0;
+}
+
+int Context::RunMain(std::shared_ptr<DiagsHandler> dh, int argc, char** argv) {
+    auto opts = detail::options::parse(argc, argv, dh->get_error_handler());
+
+    /// User-provided prefix may not be empty.
+    if (auto pre = opts.get<"--prefix">(); pre and Trim(*pre).empty()) {
+        dh->report(
+            nullptr,
+            DiagsHandler::Kind::Error,
+            Location(),
+            ERR_DRV_PREFIX_OPT_INVALID
+        );
+        return 1;
+    }
+
+    /// Collect pragmas.
+    utils::Map<std::string, bool> pragmas;
+    for (auto v : *opts.get<"-P">()) pragmas[v] = true;
+
+    /// Collect literal chars.
+    std::unordered_set<char> literal_chars;
+    for (auto& v : *opts.get<"-l">())
+        for (auto c : v)
+            literal_chars.insert(c);
+
+    if (opts.get<"-v">()) dh->report(
+        nullptr,
+        DiagsHandler::Kind::Note,
+        Location(),
+        fmt::format("[FCHK] Running fchk version {}\n", FCHK_VERSION)
+    );
+
+    Context ctx{
+        dh,
+        std::move(opts.get<"checkfile">()->contents),
+        std::move(opts.get<"checkfile">()->path),
+        opts.get_or<"--prefix">(""),
+        std::move(pragmas),
+        std::move(literal_chars),
+        *opts.get<"-D">(),
+        opts.get<"-a">(),
+        opts.get<"-v">(),
+        not opts.get<"--nobuiltin">(),
+    };
+
+    return ctx.Run();
 }
 
 void Context::RunTest(Test& test) {
@@ -1645,8 +1611,7 @@ void Context::RunTest(Test& test) {
             def_str = def_str.substr(def_pos, def.size());
 
         /// Error because the command is likely nonsense if we don’t.
-        Diag::Error(
-            this,
+        Error(
             LocationIn(def_str, check_file),
             "'{}' is not defined. Define it on the command-line using '-D {}=...'",
             def,
@@ -1658,13 +1623,13 @@ void Context::RunTest(Test& test) {
     }
 
     /// Run the command and get its output.
-    if (verbose) fmt::print(stderr, "[FCHK] Running command: {}\n", cmd);
-    auto res = RunCommand(cmd);
+    VerboseLog("[FCHK] Running command: {}\n", cmd);
+    auto res = RunCommand(*this, LocationIn(test.run_directive, check_file), cmd);
 
     /// Return early if the command failed.
     if (not res.success) {
-        fmt::print(stderr, "{}", res.output);
-        std::exit(1);
+        Error(LocationIn(test.run_directive, check_file), "Command '{}' failed\n{}", cmd, res.output);
+        return;
     }
 
     /// In verify mode, there is nothing else to do.

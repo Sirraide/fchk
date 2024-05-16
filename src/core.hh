@@ -1,8 +1,12 @@
 #ifndef FCHK_CORE_HH
 #define FCHK_CORE_HH
 
+#include <clopts.hh>
 #include <deque>
+#include <fmt/color.h>
+#include <fmt/format.h>
 #include <functional>
+#include <libassert/assert.hpp>
 #include <map>
 #include <unordered_set>
 #include <utility>
@@ -12,46 +16,8 @@
 
 class Context;
 
-// clang-format off
-#define AssertImpl(kind, cond, ...) (cond ? void(0) : \
-    ::detail::AssertFail(                             \
-        ::detail::AssertKind::kind,                   \
-        #cond,                                        \
-        __FILE__,                                     \
-        __LINE__                                      \
-        __VA_OPT__(, fmt::format(__VA_ARGS__))        \
-    )                                                 \
-)
-
-#define AbortImpl(kind, ...)                    \
-    ::detail::AssertFail(                       \
-        ::detail::AssertKind::kind,             \
-        "",                                     \
-        __FILE__,                               \
-        __LINE__                                \
-        __VA_OPT__(, fmt::format(__VA_ARGS__))  \
-    )                                           \
-
-#define Assert(cond, ...) AssertImpl(AK_Assert, cond __VA_OPT__(, __VA_ARGS__))
-#define Todo(...) AbortImpl(AK_Todo __VA_OPT__(, __VA_ARGS__))
-#define Unreachable(...) AbortImpl(AK_Unreachable __VA_OPT__(, __VA_ARGS__))
-// clang-format on
-
-namespace detail {
-enum struct AssertKind {
-    AK_Assert,
-    AK_Todo,
-    AK_Unreachable,
-};
-
-[[noreturn]] void AssertFail(
-    AssertKind k,
-    std::string_view condition,
-    std::string_view file,
-    int line,
-    std::string&& message = ""
-);
-}
+#define Assert(cond, ...) Assert(cond, __VA_OPT__(fmt::format(__VA_ARGS__)))
+#define Unreachable(...)  UNREACHABLE(__VA_OPT__(fmt::format(__VA_ARGS__)))
 
 /// A decoded source location.
 struct LocInfo {
@@ -213,9 +179,10 @@ public:
     ///
     /// This constructor is explicit because it may throw.
     ///
+    /// \param C Context for issuing warnings.
     /// \param pattern The pattern to match.
     /// \throw Regex::Exception if the pattern is invalid.
-    explicit Regex(std::string_view pattern);
+    explicit Regex(Context& C, std::string_view pattern);
 
     /// Match the regular expression against a string.
     ///
@@ -274,7 +241,7 @@ struct EnvironmentRegex {
     );
 
     /// Substitute environment variables in the string.
-    auto substitute_vars(const Context* ctx, Location loc, const Environment& env) -> std::string;
+    auto substitute_vars(Context& ctx, Location loc, const Environment& env) -> std::string;
 };
 
 /// A check that needs to be, well, checked.
@@ -305,8 +272,43 @@ namespace detail {
 class Matcher;
 }
 
-struct Diag;
+struct DiagsHandler {
+    enum struct Kind {
+        Note,    ///< Informational note.
+        Warning, ///< Warning, but no hard error.
+        Error,   ///< Hard error.
+    };
+
+    virtual ~DiagsHandler() = default;
+    virtual void write(std::string_view text);
+    virtual auto get_error_handler() -> std::function<bool(std::string&&)> { return nullptr; }
+
+    template <typename... Args>
+    void diag(Context& ctx, Kind k, Location where, fmt::format_string<Args...> fmt, Args&&... args) {
+        report(ctx, k, where, fmt::format(fmt, std::forward<Args>(args)...));
+    }
+
+    template <typename... Args>
+    void print(fmt::format_string<Args...> fmt, Args&&... args) {
+        write(fmt::format(fmt, std::forward<Args>(args)...));
+    }
+
+    // This calls `write()` to print the actual error.
+    void report(Context* ctx, Kind k, Location where, std::string_view text) {
+        report_impl(ctx, k, where, text, false);
+    }
+
+    void report_no_line(Context& ctx, Kind k, Location where, std::string_view text) {
+        report_impl(&ctx, k, where, text, true);
+    }
+
+private:
+    void report_impl(Context* ctx, Kind k, Location where, std::string_view text, bool no_line);
+};
+
 class Context {
+    friend DiagsHandler;
+
     /// State associated with a particular prefix.
     struct PrefixState {
         /// The prefix for this state.
@@ -328,6 +330,9 @@ class Context {
         PrefixState* state;
         bool verify_only;
     };
+
+    /// Diagnostics handler.
+    std::shared_ptr<DiagsHandler> dh;
 
     /// Checks
     File check_file;
@@ -362,19 +367,23 @@ class Context {
 
 public:
     friend Location;
-    friend Diag;
     friend detail::Matcher;
 
-    Context(
+    /// Run fchk’s main function.
+    static int RunMain(std::shared_ptr<DiagsHandler> dh, int argc, char** argv);
+
+    /// Create a context for running checks.
+    explicit Context(
+        std::shared_ptr<DiagsHandler> dh,
         std::string check,
-        fs::path check_name,
-        std::string prefix,
-        utils::Map<std::string, bool> pragmas,
-        std::unordered_set<char> literal_chars,
-        std::span<const std::string> defines,
-        bool abort_on_error,
-        bool verbose,
-        bool enable_builtins
+        fs::path check_name = "<input>",
+        std::string prefix = {},
+        utils::Map<std::string, bool> pragmas = {},
+        std::unordered_set<char> literal_chars = {},
+        std::span<const std::string> defines = {},
+        bool abort_on_error = false,
+        bool verbose = false,
+        bool enable_builtins = true
     );
 
     /// Check if builtins are enabled.
@@ -394,6 +403,36 @@ public:
     /// Entry point.
     int Run();
 
+    /// Diagnostics.
+    void Diag(DiagsHandler::Kind k, Location where, std::string_view message) {
+        dh->report(this, k, where, message);
+    }
+
+    template <typename... Args>
+    void Error(Location where, fmt::format_string<Args...> fmt, Args&&... args) {
+        Diag(DiagsHandler::Kind::Error, where, fmt::format(fmt, std::forward<Args>(args)...));
+    }
+
+    template <typename... Args>
+    void Note(Location where, fmt::format_string<Args...> fmt, Args&&... args) {
+        Diag(DiagsHandler::Kind::Note, where, fmt::format(fmt, std::forward<Args>(args)...));
+    }
+
+    template <typename... Args>
+    void NoteNoLine(Location where, fmt::format_string<Args...> fmt, Args&&... args) {
+        dh->report_no_line(*this, DiagsHandler::Kind::Note, where, fmt::format(fmt, std::forward<Args>(args)...));
+    }
+
+    template <typename... Args>
+    void Warning(Location where, fmt::format_string<Args...> fmt, Args&&... args) {
+        Diag(DiagsHandler::Kind::Warning, where, fmt::format(fmt, std::forward<Args>(args)...));
+    }
+
+    template <typename... Args>
+    void VerboseLog(fmt::format_string<Args...> fmt, Args&&... args) {
+        if (verbose) dh->write(fmt::format(fmt, std::forward<Args>(args)...));
+    }
+
 private:
     /// Collect all directives that start with a prefix.
     void CollectDirectives(PrefixState& state);
@@ -402,184 +441,9 @@ private:
     auto CreatePrefixState(std::string prefix) -> PrefixState*;
 
     /// Run a test.
-    void RunTest(Test& t);
-};
-
-/// A diagnostic. The diagnostic is issued when the destructor is called.
-struct Diag {
-    /// Diagnostic severity.
-    enum struct Kind {
-        None,    ///< Not an error. Do not emit this diagnostic.
-        Note,    ///< Informational note.
-        Warning, ///< Warning, but no hard error.
-        Error,   ///< Hard error. Program is ill-formed.
-        FError,  ///< Fatal (system) error. NOT a compiler bug.
-        ICError, ///< Compiler bug.
-    };
-
-private:
-    const Context* ctx;
-    Kind kind;
-    Location where;
-    std::string msg;
-    bool print_line = true;
-
-    /// Handle fatal error codes.
-    void HandleFatalErrors();
-
-    /// Print a diagnostic with no (valid) location info.
-    void PrintDiagWithoutLocation();
-
-public:
-    static constexpr u8 ICEExitCode = 17;
-    static constexpr u8 FatalExitCode = 18;
-
-    Diag(Diag&& other)
-        : ctx(other.ctx), kind(other.kind), where(other.where), msg(std::move(other.msg)) {
-        other.kind = Kind::None;
-    }
-
-    Diag& operator=(Diag&& other) {
-        if (this == &other) return *this;
-        ctx = other.ctx;
-        kind = other.kind;
-        where = other.where;
-        msg = std::move(other.msg);
-        other.kind = Kind::None;
-        return *this;
-    }
-
-    /// Create an empty diagnostic.
-    explicit Diag()
-        : ctx(nullptr), kind(Kind::None), where(), msg() {}
-
-    /// Disallow copying.
-    Diag(const Diag&) = delete;
-    Diag& operator=(const Diag&) = delete;
-
-    /// The destructor prints the diagnostic, if it hasn’t been moved from.
-    ~Diag();
-
-    /// Issue a diagnostic.
-    Diag(const Context* ctx, Kind kind, Location where, std::string msg)
-        : ctx(ctx), kind(kind), where(where), msg(std::move(msg)) {}
-
-    /// Issue a diagnostic with no location.
-    Diag(Kind _kind, std::string&& msg)
-        : ctx(nullptr), kind(_kind), where(), msg(std::move(msg)) {}
-
-    /// Issue a diagnostic with a format string and arguments.
-    template <typename... Args>
-    Diag(
-        const Context* ctx,
-        Kind kind,
-        Location where,
-        fmt::format_string<Args...> fmt,
-        Args&&... args
-    )
-        : Diag{ctx, kind, where, fmt::format(fmt, std::forward<Args>(args)...)} {}
-
-    /// Issue a diagnostic with a format string and arguments, but no location.
-    template <typename... Args>
-    Diag(Kind kind, fmt::format_string<Args...> fmt, Args&&... args)
-        : Diag{kind, fmt::format(fmt, std::forward<Args>(args)...)} {}
-
-    /// Don’t print the source line.
-    void no_line() { print_line = false; }
-
-    /// Print this diagnostic now. This resets the diagnostic.
-    void print();
-
-    /// Suppress this diagnostic.
-    void suppress() { kind = Kind::None; }
-
-    /// Emit a note.
-    template <typename... Args>
-    static Diag Note(fmt::format_string<Args...> fmt, Args&&... args) {
-        return Diag{Kind::Note, fmt::format(fmt, std::forward<Args>(args)...)};
-    }
-
-    /// Emit a note.
-    template <typename... Args>
-    static Diag Note(
-        const Context* ctx,
-        Location where,
-        fmt::format_string<Args...> fmt,
-        Args&&... args
-    ) {
-        return Diag{ctx, Kind::Note, where, fmt::format(fmt, std::forward<Args>(args)...)};
-    }
-
-    /// Emit a warning.
-    template <typename... Args>
-    static Diag Warning(fmt::format_string<Args...> fmt, Args&&... args) {
-        return Diag{Kind::Warning, fmt::format(fmt, std::forward<Args>(args)...)};
-    }
-
-    /// Emit a warning.
-    template <typename... Args>
-    static Diag Warning(
-        const Context* ctx,
-        Location where,
-        fmt::format_string<Args...> fmt,
-        Args&&... args
-    ) {
-        return Diag{ctx, Kind::Warning, where, fmt::format(fmt, std::forward<Args>(args)...)};
-    }
-
-    /// Emit an error.
-    template <typename... Args>
-    static Diag Error(fmt::format_string<Args...> fmt, Args&&... args) {
-        return Diag{Kind::Error, fmt::format(fmt, std::forward<Args>(args)...)};
-    }
-
-    /// Emit an error.
-    template <typename... Args>
-    static Diag Error(
-        const Context* ctx,
-        Location where,
-        fmt::format_string<Args...> fmt,
-        Args&&... args
-    ) {
-        return Diag{ctx, Kind::Error, where, fmt::format(fmt, std::forward<Args>(args)...)};
-    }
-
-    /// Raise an internal compiler error and exit.
-    template <typename... Args>
-    [[noreturn]] static void ICE(fmt::format_string<Args...> fmt, Args&&... args) {
-        Diag{Kind::ICError, fmt::format(fmt, std::forward<Args>(args)...)};
-        std::terminate(); /// Should never be reached.
-    }
-
-    /// Raise an internal compiler error at a location and exit.
-    template <typename... Args>
-    [[noreturn]] static void ICE(
-        const Context* ctx,
-        Location where,
-        fmt::format_string<Args...> fmt,
-        Args&&... args
-    ) {
-        Diag{ctx, Kind::ICError, where, fmt::format(fmt, std::forward<Args>(args)...)};
-        std::terminate(); /// Should never be reached.
-    }
-
-    /// Raise a fatal error and exit.
-    template <typename... Args>
-    [[noreturn]] static void Fatal(const Context* ctx, Location where, fmt::format_string<Args...> fmt, Args&&... args) {
-        Diag{ctx, Kind::FError, where, fmt::format(fmt, std::forward<Args>(args)...)};
-        std::terminate(); /// Should never be reached.
-    }
-
-    /// Raise a fatal error and exit.
     ///
-    /// This is NOT an ICE; instead it is an error that is probably caused by
-    /// the underlying system, such as attempting to output to a directory that
-    /// isn’t accessible to the user.
-    template <typename... Args>
-    [[noreturn]] static void Fatal(fmt::format_string<Args...> fmt, Args&&... args) {
-        Diag{Kind::FError, fmt::format(fmt, std::forward<Args>(args)...)};
-        std::terminate(); /// Should never be reached.
-    }
+    /// \return True if the test succeeded.
+    void RunTest(Test& t);
 };
 
 /// Helper to parse text from a string.
