@@ -61,3 +61,20 @@ TEST_CASE("Syntax of '-D' option") {
     CheckDriverError(ERR_DRV_D_OPT_INVALID, "-D", "test");
     CheckDriverOk("-D", "test=foo", "--prefix=#");
 }
+
+/// ===========================================================================
+///  FCHK Tests
+/// ===========================================================================
+/// FIXME: Actually split the big file into separate tests.
+TEST_CASE("Tests in big file pass") {
+    auto dh = std::make_shared<TestDiagsHandler>();
+    auto f = command_line_options::detail::map_file<command_line_options::file<>>(
+        FCHK_PROJECT_DIR "/test/inputs/basic.txt"sv,
+        dh->get_error_handler()
+    );
+
+    Context ctx{dh, f.contents, f.path};
+    auto res = ctx.Run();
+    CHECK(res == 0);
+    CHECK(dh->output == "");
+}
