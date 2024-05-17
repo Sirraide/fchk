@@ -53,6 +53,7 @@ constexpr void TrimFront(std::string_view& sv) {
 
 struct ExecutionResult {
     std::string output;
+    std::string error_message;
     bool success = false;
 };
 
@@ -79,33 +80,34 @@ auto GetWindowsError() -> std::string {
 #endif
 
 auto RunCommand(Context& C, Location cmd_loc, std::string_view cmd) -> ExecutionResult {
+    ExecutionResult er;
+
 #ifndef _WIN32
     auto pipe = popen(cmd.data(), "r");
     if (not pipe) {
-        C.Error(cmd_loc, "Failed to run command '{}': {}", cmd, std::strerror(errno));
-        return {};
+        er.error_message = fmt::format("Failed to run command '{}': {}", cmd, std::strerror(errno));
+        return er;
     }
 
-    ExecutionResult er;
     static constexpr usz bufsize = 4'096;
     for (;;) {
         er.output.resize(er.output.size() + bufsize);
         auto read = std::fread(er.output.data() + er.output.size() - bufsize, 1, bufsize, pipe);
         if (read < bufsize) er.output.resize(er.output.size() - (bufsize - read));
         if (std::ferror(pipe)) {
-            C.Error(cmd_loc, "Error reading file: {}", std::strerror(errno));
+            er.error_message = fmt::format("Error reading file: {}", std::strerror(errno));
             return er;
         }
         if (std::feof(pipe)) break;
     }
     auto code = pclose(pipe);
     if (not WIFEXITED(code)) {
-        C.Error(cmd_loc, "Command '{}' exited abnormally", cmd);
+        er.error_message = fmt::format("Command '{}' exited abnormally", cmd);
         return er;
     }
 
     if (WEXITSTATUS(code) != 0) {
-        C.Error(cmd_loc, "Command '{}' exited with status {}", cmd, WEXITSTATUS(code));
+        er.error_message = fmt::format("Command '{}' exited with status {}", cmd, WEXITSTATUS(code));
         return er;
     }
 
@@ -121,8 +123,8 @@ auto RunCommand(Context& C, Location cmd_loc, std::string_view cmd) -> Execution
 
     /// Create the pipe
     if (not CreatePipe(&pipe_read, &pipe_write, &sa, 0)) {
-        C.Error(cmd_loc, "Failed to create pipe: {}", GetWindowsError());
-        return {};
+        er.error_message = fmt::format("Failed to create pipe: {}", GetWindowsError());
+        return er;
     }
 
     /// Create the child process.
@@ -148,22 +150,21 @@ auto RunCommand(Context& C, Location cmd_loc, std::string_view cmd) -> Execution
             &pi
         )
     ) {
-        C.Error(cmd_loc, "Failed to create process: {}", GetWindowsError());
-        return {};
+        er.error_message = fmt::format("Failed to create process: {}", GetWindowsError());
+        return er;
     }
 
     /// Close the write end of the pipe.
     CloseHandle(pipe_write);
 
     /// Read the output.
-    ExecutionResult er;
     for (;;) {
         static constexpr usz bufsize = 4'096;
         er.output.resize(er.output.size() + bufsize);
         DWORD read{};
         if (not ReadFile(pipe_read, er.output.data() + er.output.size() - bufsize, bufsize, &read, nullptr)) {
             if (GetLastError() == ERROR_BROKEN_PIPE) break;
-            C.Error(cmd_loc, "Failed to read from pipe: {}", GetWindowsError());
+            er.error_message = fmt::format("Failed to read from pipe: {}", GetWindowsError());
             return er;
         }
         if (read == 0) break;
@@ -179,12 +180,12 @@ auto RunCommand(Context& C, Location cmd_loc, std::string_view cmd) -> Execution
     /// Check its exit code.
     DWORD exit_code{};
     if (GetExitCodeProcess(pi.hProcess, &exit_code) == FALSE) {
-        C.Error(cmd_loc, "Failed to get exit code: {}", GetWindowsError());
+        er.error_message = fmt::format("Failed to get exit code: {}", GetWindowsError());
         return er;
     }
 
     if (exit_code != 0) {
-        C.Error(cmd_loc, "Command '{}' exited with status {}", cmd, exit_code);
+        er.error_message = fmt::format("Command '{}' exited with status {}", cmd, exit_code);
         return er;
     }
 
@@ -1628,7 +1629,18 @@ void Context::RunTest(Test& test) {
 
     /// Return early if the command failed.
     if (not res.success) {
-        Error(LocationIn(test.run_directive, check_file), "Command '{}' failed\n{}", cmd, res.output);
+        // Don’t print an error in verify mode.
+        if (not test.verify_only) {
+            Error(
+                LocationIn(test.run_directive, check_file),
+                "Command '{}' failed: {}\n{}",
+                cmd,
+                res.error_message,
+                res.output
+            );
+        }
+
+        has_error = true;
         return;
     }
 
