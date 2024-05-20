@@ -294,3 +294,6 @@ XYZ
 ## re+ $LINE:12
 ZZZ
 294:12
+
+## The 'X' directive is like 'V', but expects that the test fails.
+## X false

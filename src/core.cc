@@ -981,6 +981,7 @@ class Matcher {
             case Directive::Run:
             case Directive::Pragma:
             case Directive::Verify:
+            case Directive::XFail:
                 Unreachable();
 
             case Directive::Begin: {
@@ -1171,7 +1172,7 @@ public:
     }
 };
 
-static_assert(DirectiveNames.size() == 18, "Update the map below when directives are added");
+static_assert(DirectiveNames.size() == 19, "Update the map below when directives are added");
 static std::unordered_map<std::string_view, Directive> NameDirectiveMap{
     {DirectiveNames[+Directive::CheckAny], Directive::CheckAny},
     {DirectiveNames[+Directive::CheckNext], Directive::CheckNext},
@@ -1191,6 +1192,7 @@ static std::unordered_map<std::string_view, Directive> NameDirectiveMap{
     {DirectiveNames[+Directive::Prefix], Directive::Prefix},
     {DirectiveNames[+Directive::Run], Directive::Run},
     {DirectiveNames[+Directive::Verify], Directive::Verify},
+    {DirectiveNames[+Directive::XFail], Directive::XFail},
 };
 
 const auto RunWithPrefixDirectiveNameStart = fmt::format("{}[", DirectiveNames[+Directive::Run]);
@@ -1199,6 +1201,17 @@ const auto RunWithPrefixDirectiveNameStart = fmt::format("{}[", DirectiveNames[+
 
 void Context::CollectDirectives(PrefixState& state) {
     Stream chfile{check_file.contents};
+
+    /// Check if a directive causes a new test to be run.
+    auto IsRunDirective = [](Directive dir) {
+        switch (dir) {
+            default: return false;
+            case Directive::Run:
+            case Directive::Verify:
+            case Directive::XFail:
+                return true;
+        }
+    };
 
     /// Read a directive’s argument, if any.
     auto ReadDirectiveArg = [&] { return chfile.at("\n") ? "" : Trim(chfile.skip_to_ws().skip_ws().read_to("\n")); };
@@ -1253,8 +1266,13 @@ void Context::CollectDirectives(PrefixState& state) {
         }
 
         /// Run/Verify directives.
-        if (it->second == Directive::Run or it->second == Directive::Verify) {
-            run_directives.emplace_back(value, &state, it->second == Directive::Verify);
+        if (IsRunDirective(it->second)) {
+            run_directives.emplace_back(
+                value,
+                &state,
+                it->second != Directive::Run,
+                it->second == Directive::XFail
+            );
             continue;
         }
 
@@ -1340,6 +1358,7 @@ void Context::CollectDirectives(PrefixState& state) {
             case Directive::Prefix:
             case Directive::Run:
             case Directive::Verify:
+            case Directive::XFail:
                 Unreachable();
 
             case Directive::CheckAny:
@@ -1629,7 +1648,10 @@ void Context::RunTest(Test& test) {
 
     /// Return early if the command failed.
     if (not res.success) {
-        // Don’t print an error in verify mode.
+        /// This was expected.
+        if (test.xfail) return;
+
+        /// Don’t print an error in verify mode.
         if (not test.verify_only) {
             Error(
                 LocationIn(test.run_directive, check_file),
@@ -1639,6 +1661,18 @@ void Context::RunTest(Test& test) {
                 res.output
             );
         }
+
+        has_error = true;
+        return;
+    }
+
+    /// We were supposed to fail.
+    if (test.xfail) {
+        Error(
+            LocationIn(test.run_directive, check_file),
+            "Command '{}' succeeded even though it was expected to fail",
+            cmd
+        );
 
         has_error = true;
         return;
