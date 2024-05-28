@@ -64,7 +64,6 @@ if (CMAKE_CXX_COMPILER_ID STREQUAL "GNU" OR CMAKE_CXX_COMPILER_ID STREQUAL "Clan
 
         ## C/C++.
         -Werror=implicit-fallthrough
-        -Werror=missing-include-dirs # User-specified include dir does not exist.
         -Werror=pointer-arith        # Disallow void* and function pointer arithmetic.
         -Werror=string-compare       # Nonsensical string comparisons.
         -Werror=switch               # Missing switch cases.
