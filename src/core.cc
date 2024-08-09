@@ -602,7 +602,7 @@ void DiagsHandler::report_impl(Context* ctx, Kind kind, Location where, std::str
     utils::ReplaceAll(after, "\t", "    ");
 
     /// Print the file name, line number, and column number.
-    print("{}{}:{}:{}: ", colour(Default), where.file->path.string(), line, col);
+    print("{}{}:{}:{}: ", colour(Default), where.file->path.string(), line, col + 1);
 
     /// Print the diagnostic name and message.
     print("{}{}: ", colour(kind), Name(kind));
@@ -1260,7 +1260,8 @@ void Context::CollectDirectives(PrefixState& state) {
             /// Overriding the prefix is not allowed anymore.
             if (state.prefix != value) Warning(
                 LocationIn(dir, check_file),
-                "Conflicting prefix directive ignored (current prefix is '{}')",
+                "Conflicting prefix directive '{}' ignored (current prefix is '{}')",
+                value,
                 state.prefix
             );
             continue;
@@ -1665,7 +1666,9 @@ void Context::RunTest(Test& test) {
         if (test.xfail) return;
 
         /// Don’t print an error in verify mode.
-        if (not test.verify_only) {
+        if (test.verify_only) {
+            dh->write(res.output);
+        } else {
             Error(
                 LocationIn(test.run_directive, check_file),
                 "Command '{}' failed: {}\n{}",

@@ -70,12 +70,31 @@ TEST_CASE("Syntax of '-D' option") {
 /// ===========================================================================
 ///  FCHK Tests
 /// ===========================================================================
-void ExpectOutput(std::string input, int ret_val, std::string output) {
+void ExpectOutput(
+    std::string_view input,
+    int ret_val,
+    std::string_view output,
+    std::string prefix = "#"
+) {
     auto dh = std::make_shared<TestDiagsHandler>();
-    Context ctx{dh, std::move(input), "<input>"};
+    Context ctx{dh, std::string{Trim(input)}, "<input>", std::move(prefix)};
     auto res = ctx.Run();
     CHECK(res == ret_val);
     CHECK(Trim(dh->output) == Trim(output));
+}
+
+void ExpectOutput2(
+    std::string input,
+    std::string_view checks,
+    int ret_val,
+    std::string_view output
+) {
+    utils::ReplaceAll(input, "\n", "\\n"); // Escape newlines so this is parsed as one line.
+    ExpectOutput(std::format("# R echo -e \"{}\"\n{}", input, checks), ret_val, output);
+}
+
+void ExpectMatch(std::string in, std::string_view tests) {
+    return ExpectOutput2(std::move(in), tests, 0, "");
 }
 
 /// FIXME: Actually split the big file into separate tests.
@@ -96,6 +115,141 @@ TEST_CASE("Complain if no prefix is set") {
     ExpectOutput(
         "",
         1,
-        "Error: No prefix provided and no FCHK-PREFIX directive found in check file"
+        "Error: No prefix provided and no FCHK-PREFIX directive found in check file",
+        ""
+    );
+}
+
+TEST_CASE("Warn on attempted prefix override") {
+    ExpectOutput(
+        "# FCHK-PREFIX X\n# R true\n",
+        0,
+        R"(
+<input>:1:3: Warning: Conflicting prefix directive 'X' ignored (current prefix is '#')
+ 1 │ # FCHK-PREFIX X
+       ~~~~~~~~~~~
+        )"
+    );
+}
+
+TEST_CASE("V directive prints...") {
+    SECTION("nothing on success") {
+        ExpectOutput("# V echo foobar\n", 0, "");
+    }
+
+    SECTION("the program’s output on error") {
+        ExpectOutput("# V echo foobar ; false\n", 1, "foobar");
+    }
+}
+
+TEST_CASE("%s designates the current file") {
+    ExpectOutput("# V echo '%s' ; false", 1, "<input>");
+}
+
+TEST_CASE("Prefixed lines not starting with a directive are ignored") {
+    ExpectOutput(
+        "# R true\n # Really not a directive\n # AlsoNotADirective\n",
+        0,
+        ""
+    );
+}
+
+TEST_CASE("Basic matching") {
+    auto in = "abcd\n1234\nfoo\nbar";
+
+    ExpectMatch(in,
+                R"(
+# * abcd
+# + 1234
+# + foo
+# + bar
+        )");
+
+    ExpectMatch(in,
+                R"(
+# * abcd
+# * 1234
+# * foo
+# * bar
+        )");
+
+    ExpectMatch(in,
+                R"(
+# * abcd
+# + 1234
+# * foo
+# + bar
+        )");
+}
+
+TEST_CASE("Mismatch") {
+    ExpectOutput2("abcd", "# * abbd", 1, R"(
+<input>:2:5: Error: Expected string not found in input
+ 2 │ # * abbd
+         ~~~~
+<input>:1:1: Note: Started matching here
+ 1 │ abcd
+     ~~~~
+ 1 │ abcd
+ 2 │
+)");
+}
+
+TEST_CASE("Checks ignore spaces") {
+    ExpectMatch(
+        "Lorem ipsum dolor sit amet",
+        "# * Lorem ipsum dolor sit amet"
+    );
+
+    ExpectMatch(
+        "    Lorem   ipsum       dolor        sit amet  ",
+        "# * Lorem ipsum dolor sit amet"
+    );
+
+    ExpectMatch(
+        "Lorem ipsum dolor sit amet",
+        "# *    Lorem   ipsum       dolor        sit amet  "
+    );
+}
+
+TEST_CASE("* can skip lines") {
+    ExpectMatch(
+        "A\nB\nC\nD",
+        R"(
+# * B
+# * D
+        )"
+    );
+}
+
+TEST_CASE("+ can’t skip lines") {
+    ExpectOutput2(
+        "A\nB\nC\nD",
+        R"(
+# * B
+# + D
+        )",
+        1,
+        R"(
+<input>:4:5: Error: Line does not match expected string
+ 4 │ # + D
+         ~
+<input>:3:1: Note: Expected match here
+ 3 │ C
+     ~
+ 2 │ B
+ 3 │ C
+ 4 │ D
+ 5 │
+        )"
+    );
+}
+
+TEST_CASE("Regular expression matching") {
+    ExpectMatch(
+        "1234567890\n"
+        "asdfghjkl",
+        "# re* [0-9]+\n"
+        "# re+ [a-z]+"
     );
 }
