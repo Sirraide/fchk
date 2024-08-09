@@ -10,6 +10,11 @@ using SV = std::string_view;
 
 struct TestDiagsHandler : DiagsHandler {
     std::string output;
+
+    TestDiagsHandler() {
+        enable_colours = false;
+    }
+
     void write(SV text) override { output += text; }
 
     auto get_error_handler() -> std::function<bool(std::string&&)> override {
@@ -65,6 +70,14 @@ TEST_CASE("Syntax of '-D' option") {
 /// ===========================================================================
 ///  FCHK Tests
 /// ===========================================================================
+void ExpectOutput(std::string input, int ret_val, std::string output) {
+    auto dh = std::make_shared<TestDiagsHandler>();
+    Context ctx{dh, std::move(input), "<input>"};
+    auto res = ctx.Run();
+    CHECK(res == ret_val);
+    CHECK(Trim(dh->output) == Trim(output));
+}
+
 /// FIXME: Actually split the big file into separate tests.
 TEST_CASE("Tests in big file pass") {
     auto dh = std::make_shared<TestDiagsHandler>();
@@ -77,4 +90,12 @@ TEST_CASE("Tests in big file pass") {
     auto res = ctx.Run();
     CHECK(res == 0);
     CHECK(dh->output == "");
+}
+
+TEST_CASE("Complain if no prefix is set") {
+    ExpectOutput(
+        "",
+        1,
+        "Error: No prefix provided and no FCHK-PREFIX directive found in check file"
+    );
 }

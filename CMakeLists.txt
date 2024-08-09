@@ -91,7 +91,7 @@ endif()
 ## Additional flags for Clang.
 if (CMAKE_CXX_COMPILER_ID STREQUAL "Clang")
     target_compile_options(_fchk_options INTERFACE
-        -Werror=dangling 
+        -Werror=dangling
         -Werror=return-stack-address
     )
 endif()
@@ -157,18 +157,6 @@ endif()
 ##  Submodules and include dirs.
 ## ============================================================================
 include(FetchContent)
-
-## Find libfmt.
-find_package(fmt CONFIG)
-if (NOT fmt_FOUND)
-	message(STATUS "Fmtlib not found, downloading ...")
-	FetchContent_Declare(_fchk_fmtlib
-		GIT_REPOSITORY https://github.com/fmtlib/fmt.git
-		GIT_TAG 10.0.0
-		SOURCE_DIR "${CMAKE_CURRENT_BINARY_DIR}/libs/fmt"
-    )
-	FetchContent_MakeAvailable(_fchk_fmtlib)
-endif()
 
 ## Add clopts.
 message(STATUS "Downloading Clopts...")

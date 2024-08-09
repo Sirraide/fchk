@@ -4,7 +4,7 @@
 #include <algorithm>
 #include <chrono>
 #include <filesystem>
-#include <fmt/format.h>
+#include <print>
 #include <ranges>
 #include <unordered_map>
 
@@ -101,7 +101,7 @@ constexpr bool IsWhitespace(char c) {
 } // namespace utils
 
 /// Not in utils because we need it constantly.
-constexpr auto Trim(std::string_view str) -> std::string_view {
+[[nodiscard]] constexpr auto Trim(std::string_view str) -> std::string_view {
     while (not str.empty() and utils::IsWhitespace(str.front())) str.remove_prefix(1);
     while (not str.empty() and utils::IsWhitespace(str.back())) str.remove_suffix(1);
     return str;

@@ -3,11 +3,10 @@
 
 #include <clopts.hh>
 #include <deque>
-#include <fmt/color.h>
-#include <fmt/format.h>
 #include <functional>
 #include <libassert/assert.hpp>
 #include <map>
+#include <print>
 #include <unordered_set>
 #include <utility>
 #include <utils.hh>
@@ -16,8 +15,8 @@
 
 class Context;
 
-#define Assert(cond, ...) Assert(cond, __VA_OPT__(fmt::format(__VA_ARGS__)))
-#define Unreachable(...)  UNREACHABLE(__VA_OPT__(fmt::format(__VA_ARGS__)))
+#define Assert(cond, ...) Assert(cond, __VA_OPT__(std::format(__VA_ARGS__)))
+#define Unreachable(...)  UNREACHABLE(__VA_OPT__(std::format(__VA_ARGS__)))
 
 /// A decoded source location.
 struct LocInfo {
@@ -159,8 +158,8 @@ public:
         std::string message;
 
         template <typename... Args>
-        explicit Exception(fmt::format_string<Args...> fmt, Args&&... args)
-            : message(fmt::format(fmt, std::forward<Args>(args)...)) {}
+        explicit Exception(std::format_string<Args...> fmt, Args&&... args)
+            : message(std::format(fmt, std::forward<Args>(args)...)) {}
     };
 
     ~Regex() noexcept;
@@ -282,18 +281,61 @@ struct DiagsHandler {
         Error,   ///< Hard error.
     };
 
+    enum struct Colour {
+        Yellow,
+        Red,
+        Green,
+        Blue,
+        Default,
+        Reset,
+    };
+
+    using enum Colour;
+
+    /// Whether to enable colours.
+    bool enable_colours = true;
+
+    /// What stream to print to.
+    FILE* stream = stderr;
+
     virtual ~DiagsHandler() = default;
     virtual void write(std::string_view text);
     virtual auto get_error_handler() -> std::function<bool(std::string&&)> { return nullptr; }
 
-    template <typename... Args>
-    void diag(Context& ctx, Kind k, Location where, fmt::format_string<Args...> fmt, Args&&... args) {
-        report(ctx, k, where, fmt::format(fmt, std::forward<Args>(args)...));
+    /// Get the colour of a diagnostic.
+    auto colour(Kind kind) -> std::string_view {
+        using Kind = Kind;
+        if (not enable_colours) return "";
+        switch (kind) {
+            case Kind::Warning: return colour(Yellow);
+            case Kind::Note: return colour(Green);
+            case Kind::Error: return colour(Red);
+            default: return "";
+        }
+    }
+
+    /// Get the ANSI escape sequence for a colour.
+    auto colour(Colour c, bool bold = true) -> std::string_view {
+        if (not enable_colours) return "";
+        switch (c) {
+            case Yellow: return bold ? "\033[1;33m"sv : "\033[0;33m"sv;
+            case Red: return bold ? "\033[1;31m"sv : "\033[0;31m"sv;
+            case Green: return bold ? "\033[1;32m"sv : "\033[0;32m"sv;
+            case Blue: return bold ? "\033[1;34m"sv : "\033[0;34m"sv;
+            case Default: return bold ? "\033[m\033[1m"sv : "\033[m"sv;
+            case Reset: return "\033[m"sv;
+        }
+        Unreachable("Invalid colour");
     }
 
     template <typename... Args>
-    void print(fmt::format_string<Args...> fmt, Args&&... args) {
-        write(fmt::format(fmt, std::forward<Args>(args)...));
+    void diag(Context& ctx, Kind k, Location where, std::format_string<Args...> fmt, Args&&... args) {
+        report(ctx, k, where, std::format(fmt, std::forward<Args>(args)...));
+    }
+
+    template <typename... Args>
+    void print(std::format_string<Args...> fmt, Args&&... args) {
+        write(std::format(fmt, std::forward<Args>(args)...));
     }
 
     // This calls `write()` to print the actual error.
@@ -413,28 +455,28 @@ public:
     }
 
     template <typename... Args>
-    void Error(Location where, fmt::format_string<Args...> fmt, Args&&... args) {
-        Diag(DiagsHandler::Kind::Error, where, fmt::format(fmt, std::forward<Args>(args)...));
+    void Error(Location where, std::format_string<Args...> fmt, Args&&... args) {
+        Diag(DiagsHandler::Kind::Error, where, std::format(fmt, std::forward<Args>(args)...));
     }
 
     template <typename... Args>
-    void Note(Location where, fmt::format_string<Args...> fmt, Args&&... args) {
-        Diag(DiagsHandler::Kind::Note, where, fmt::format(fmt, std::forward<Args>(args)...));
+    void Note(Location where, std::format_string<Args...> fmt, Args&&... args) {
+        Diag(DiagsHandler::Kind::Note, where, std::format(fmt, std::forward<Args>(args)...));
     }
 
     template <typename... Args>
-    void NoteNoLine(Location where, fmt::format_string<Args...> fmt, Args&&... args) {
-        dh->report_no_line(*this, DiagsHandler::Kind::Note, where, fmt::format(fmt, std::forward<Args>(args)...));
+    void NoteNoLine(Location where, std::format_string<Args...> fmt, Args&&... args) {
+        dh->report_no_line(*this, DiagsHandler::Kind::Note, where, std::format(fmt, std::forward<Args>(args)...));
     }
 
     template <typename... Args>
-    void Warning(Location where, fmt::format_string<Args...> fmt, Args&&... args) {
-        Diag(DiagsHandler::Kind::Warning, where, fmt::format(fmt, std::forward<Args>(args)...));
+    void Warning(Location where, std::format_string<Args...> fmt, Args&&... args) {
+        Diag(DiagsHandler::Kind::Warning, where, std::format(fmt, std::forward<Args>(args)...));
     }
 
     template <typename... Args>
-    void VerboseLog(fmt::format_string<Args...> fmt, Args&&... args) {
-        if (verbose) dh->write(fmt::format(fmt, std::forward<Args>(args)...));
+    void VerboseLog(std::format_string<Args...> fmt, Args&&... args) {
+        if (verbose) dh->write(std::format(fmt, std::forward<Args>(args)...));
     }
 
 private:

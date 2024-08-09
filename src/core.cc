@@ -1,6 +1,6 @@
+#include <cmath>
 #include <core.hh>
 #include <errs.hh>
-#include <fmt/color.h>
 #include <unordered_map>
 
 #define PCRE2_CODE_UNIT_WIDTH 8
@@ -19,6 +19,8 @@ using options = clopts< // clang-format off
     multiple<option<"-l", "Treat character(s) as literal">>,
     multiple<option<"-P", "Set a pragma">>,
     multiple<option<"-D", "Define a constant that can be used in 'R' directives">>,
+    option<"--colours", "Enable colours in diagnostics", values<"auto", "always", "never">>,
+    flag<"--stdout", "Print to stdout instead of stderr">,
     flag<"-a", "Abort on the first failed check">,
     flag<"-v", "Show more verbose error messages">,
     flag<"--nobuiltin", "Disable builtin magic variables (e.g. $LINE)">,
@@ -72,20 +74,24 @@ auto GetWindowsError() -> std::string {
         nullptr
     );
 
-    if (sz == 0) return fmt::format("Unknown error {}", err);
+    if (sz == 0) return std::format("Unknown error: {}", err);
     std::string msg{buffer, sz};
     LocalFree(buffer);
     return msg;
 }
 #endif
 
-auto RunCommand(Context& C, Location cmd_loc, std::string_view cmd) -> ExecutionResult {
+auto RunCommand(
+    [[maybe_unused]] Context& C,
+    [[maybe_unused]] Location cmd_loc,
+    std::string_view cmd
+) -> ExecutionResult {
     ExecutionResult er;
 
 #ifndef _WIN32
     auto pipe = popen(cmd.data(), "r");
     if (not pipe) {
-        er.error_message = fmt::format("Failed to run command '{}': {}", cmd, std::strerror(errno));
+        er.error_message = std::format("Failed to run command '{}': {}", cmd, std::strerror(errno));
         return er;
     }
 
@@ -95,19 +101,19 @@ auto RunCommand(Context& C, Location cmd_loc, std::string_view cmd) -> Execution
         auto read = std::fread(er.output.data() + er.output.size() - bufsize, 1, bufsize, pipe);
         if (read < bufsize) er.output.resize(er.output.size() - (bufsize - read));
         if (std::ferror(pipe)) {
-            er.error_message = fmt::format("Error reading file: {}", std::strerror(errno));
+            er.error_message = std::format("Error reading file: {}", std::strerror(errno));
             return er;
         }
         if (std::feof(pipe)) break;
     }
     auto code = pclose(pipe);
     if (not WIFEXITED(code)) {
-        er.error_message = fmt::format("Command '{}' exited abnormally", cmd);
+        er.error_message = std::format("Command '{}' exited abnormally", cmd);
         return er;
     }
 
     if (WEXITSTATUS(code) != 0) {
-        er.error_message = fmt::format("Command '{}' exited with status {}", cmd, WEXITSTATUS(code));
+        er.error_message = std::format("Command '{}' exited with status {}", cmd, WEXITSTATUS(code));
         return er;
     }
 
@@ -123,7 +129,7 @@ auto RunCommand(Context& C, Location cmd_loc, std::string_view cmd) -> Execution
 
     /// Create the pipe
     if (not CreatePipe(&pipe_read, &pipe_write, &sa, 0)) {
-        er.error_message = fmt::format("Failed to create pipe: {}", GetWindowsError());
+        er.error_message = std::format("Failed to create pipe: {}", GetWindowsError());
         return er;
     }
 
@@ -135,7 +141,7 @@ auto RunCommand(Context& C, Location cmd_loc, std::string_view cmd) -> Execution
     si.hStdOutput = pipe_write;
     si.dwFlags |= STARTF_USESTDHANDLES;
 
-    auto command = fmt::format("cmd /c {}", cmd);
+    auto command = std::format("cmd /c {}", cmd);
     if (
         not CreateProcess(
             nullptr,
@@ -150,7 +156,7 @@ auto RunCommand(Context& C, Location cmd_loc, std::string_view cmd) -> Execution
             &pi
         )
     ) {
-        er.error_message = fmt::format("Failed to create process: {}", GetWindowsError());
+        er.error_message = std::format("Failed to create process: {}", GetWindowsError());
         return er;
     }
 
@@ -164,7 +170,7 @@ auto RunCommand(Context& C, Location cmd_loc, std::string_view cmd) -> Execution
         DWORD read{};
         if (not ReadFile(pipe_read, er.output.data() + er.output.size() - bufsize, bufsize, &read, nullptr)) {
             if (GetLastError() == ERROR_BROKEN_PIPE) break;
-            er.error_message = fmt::format("Failed to read from pipe: {}", GetWindowsError());
+            er.error_message = std::format("Failed to read from pipe: {}", GetWindowsError());
             return er;
         }
         if (read == 0) break;
@@ -180,12 +186,12 @@ auto RunCommand(Context& C, Location cmd_loc, std::string_view cmd) -> Execution
     /// Check its exit code.
     DWORD exit_code{};
     if (GetExitCodeProcess(pi.hProcess, &exit_code) == FALSE) {
-        er.error_message = fmt::format("Failed to get exit code: {}", GetWindowsError());
+        er.error_message = std::format("Failed to get exit code: {}", GetWindowsError());
         return er;
     }
 
     if (exit_code != 0) {
-        er.error_message = fmt::format("Command '{}' exited with status {}", cmd, exit_code);
+        er.error_message = std::format("Command '{}' exited with status {}", cmd, exit_code);
         return er;
     }
 
@@ -393,7 +399,7 @@ EnvironmentRegex::EnvironmentRegex(
                 (s.skip(1), not s.empty() and not s.at_any(" \t\n\r\f\v"))
             ) {
                 auto type = s.read_while([](char c) { return std::isalnum(u8(c)) or c == '_'; }, true);
-                processed += fmt::format("(?<{}>${})", capture, type);
+                processed += std::format("(?<{}>${})", capture, type);
             }
 
             /// Regular capture.
@@ -491,7 +497,7 @@ auto SubstituteVars(
 
                 /// Always escape literal variables.
                 else {
-                    subst += fmt::format("\\Q{}\\E", var->value);
+                    subst += std::format("\\Q{}\\E", var->value);
                 }
             } else {
                 throw Regex::Exception("Undefined capture '{}'", capture);
@@ -511,7 +517,7 @@ auto SubstituteVars(
         if (s.front() == '\\') {
             s.skip(R"(\k<)"sv.size());
             auto name = s.read_while(IsCaptureGroupName, true);
-            if (re and re->defined_captures.contains(name)) subst += fmt::format("\\k<{}>", name);
+            if (re and re->defined_captures.contains(name)) subst += std::format("\\k<{}>", name);
             else Add(name, false);
             s.skip(">"sv.size());
         }
@@ -526,7 +532,7 @@ auto SubstituteVars(
             }
 
             auto name = s.read_while(IsCaptureGroupName, true);
-            if (re and re->defined_captures.contains(name)) subst += fmt::format("\\k<{}>", name);
+            if (re and re->defined_captures.contains(name)) subst += std::format("\\k<{}>", name);
             else Add(name, escape);
         }
     }
@@ -542,17 +548,6 @@ auto EnvironmentRegex::substitute_vars(Context& ctx, Location loc, const Environ
 ///  Diagnostics
 /// ===========================================================================
 namespace {
-/// Get the colour of a diagnostic.
-constexpr auto Colour(DiagsHandler::Kind kind) {
-    using Kind = DiagsHandler::Kind;
-    switch (kind) {
-        case Kind::Warning: return fg(fmt::terminal_color::yellow) | fmt::emphasis::bold;
-        case Kind::Note: return fg(fmt::terminal_color::green) | fmt::emphasis::bold;
-        case Kind::Error: return fg(fmt::terminal_color::red) | fmt::emphasis::bold;
-        default: return fmt::text_style{};
-    }
-}
-
 /// Get the name of a diagnostic.
 constexpr std::string_view Name(DiagsHandler::Kind kind) {
     using Kind = DiagsHandler::Kind;
@@ -566,10 +561,6 @@ constexpr std::string_view Name(DiagsHandler::Kind kind) {
 } // namespace
 
 void DiagsHandler::report_impl(Context* ctx, Kind kind, Location where, std::string_view msg, bool no_line) {
-    using fmt::fg;
-    using enum fmt::emphasis;
-    using enum fmt::terminal_color;
-
     /// Separate error messages w/ an empty line.
     if (ctx) {
         if (kind != Kind::Note and ctx->has_diag) print("\n");
@@ -585,11 +576,11 @@ void DiagsHandler::report_impl(Context* ctx, Kind kind, Location where, std::str
     /// skip printing the location.
     if (not where.seekable()) {
         /// Even if the location is invalid, print the file name if we can.
-        if (where.file) write(fmt::format(bold, "{}: ", where.file->path.string()));
+        if (where.file) print("{}{}: ", colour(Default), where.file->path.string());
 
         /// Print the message.
-        write(fmt::format(Colour(kind), "{}: ", Name(kind)));
-        print("{}\n", msg);
+        print("{}{}: ", colour(kind), Name(kind));
+        print("{}{}\n", colour(Default), msg);
         return;
     }
 
@@ -611,17 +602,17 @@ void DiagsHandler::report_impl(Context* ctx, Kind kind, Location where, std::str
     utils::ReplaceAll(after, "\t", "    ");
 
     /// Print the file name, line number, and column number.
-    write(fmt::format(bold, "{}:{}:{}: ", where.file->path.string(), line, col));
+    print("{}{}:{}:{}: ", colour(Default), where.file->path.string(), line, col);
 
     /// Print the diagnostic name and message.
-    write(fmt::format(Colour(kind), "{}: ", Name(kind)));
-    print("{}\n", msg);
+    print("{}{}: ", colour(kind), Name(kind));
+    print("{}{}\n", msg, colour(Reset));
 
     /// Print the line up to the start of the location, the range in the right
     /// colour, and the rest of the line.
     if (no_line) return;
     print(" {} │ {}", line, before);
-    write(fmt::format(Colour(kind), "{}", range));
+    print("{}{}{}", colour(kind), range, colour(Reset));
     print("{}\n", after);
 
     /// Determine the number of digits in the line number.
@@ -645,13 +636,13 @@ void DiagsHandler::report_impl(Context* ctx, Kind kind, Location where, std::str
         print(" ");
 
     /// Finally, underline the range.
-    for (usz i = 0, end = ColumnWidth(range); i < end; i++)
-        write(fmt::format(Colour(kind), "~"));
-    print("\n");
+    write(colour(kind));
+    for (usz i = 0, end = ColumnWidth(range); i < end; i++) write("~");
+    print("{}\n", colour(Reset));
 }
 
 void DiagsHandler::write(std::string_view text) {
-    fmt::print(stderr, "{}", text);
+    std::print(stream, "{}", text);
 }
 
 /// ===========================================================================
@@ -810,8 +801,16 @@ class Matcher {
                 static constexpr usz max_lines = 7;
                 if (usz(i) >= max_lines) break;
                 M.C->dh->print(" {: >{}} │ ", start + usz(i), utils::NumberWidth(start + max_lines - 1));
-                if (i == 1 - (lc.line == 1)) M.C->dh->print("\033[1;32m{}\n\033[m", line.text.empty() ? "<empty>" : line.text);
-                else M.C->dh->print("{}\n", line.text);
+                if (i == 1 - (lc.line == 1)) {
+                    M.C->dh->print(
+                        "{}{}\n{}",
+                        M.C->dh->colour(DiagsHandler::Kind::Note),
+                        line.text.empty() ? "<empty>" : line.text,
+                        M.C->dh->colour(DiagsHandler::Colour::Reset)
+                    );
+                } else {
+                    M.C->dh->print("{}\n", line.text);
+                }
             }
         }
 
@@ -909,8 +908,10 @@ class Matcher {
         ) {
             if (env.empty()) return;
             if (C->verbose) {
-                auto env_strs = env | vws::transform([](auto&& p) { return fmt::format("{} = {}", p.name, p.value); });
-                C->NoteNoLine(chk->loc, "With env: [\n    {}\n]\n", fmt::join(env_strs, "\n    "));
+                auto env_strs = env | vws::transform([](auto&& p) { return std::format("    {} = {}", p.name, p.value); });
+                std::string joined;
+                for (auto&& s : env_strs) joined += s + '\n';
+                C->NoteNoLine(chk->loc, "With env: [\n{}\n]\n", joined);
             }
 
             /// Print expansion of regex that contains captures.
@@ -1195,7 +1196,7 @@ static std::unordered_map<std::string_view, Directive> NameDirectiveMap{
     {DirectiveNames[+Directive::XFail], Directive::XFail},
 };
 
-const auto RunWithPrefixDirectiveNameStart = fmt::format("{}[", DirectiveNames[+Directive::Run]);
+const auto RunWithPrefixDirectiveNameStart = std::format("{}[", DirectiveNames[+Directive::Run]);
 
 } // namespace detail
 
@@ -1349,7 +1350,7 @@ void Context::CollectDirectives(PrefixState& state) {
             for (auto c : state.literal_chars) utils::ReplaceAll(
                 expr,
                 std::string_view{&c, 1},
-                fmt::format("\\{}", c)
+                std::format("\\{}", c)
             );
         };
 
@@ -1539,11 +1540,16 @@ int Context::Run() {
                 .read_to("\n")
         );
 
-        if (states_by_prefix[0].prefix.empty()) Error(
-            Location(),
-            "No prefix provided and no {} directive found in check file",
-            DirectiveNames[+Directive::Prefix]
-        );
+        if (states_by_prefix[0].prefix.empty()) {
+            Error(
+                Location(),
+                "No prefix provided and no {} directive found in check file",
+                DirectiveNames[+Directive::Prefix]
+            );
+
+            // We can’t do anything if there is no prefix.
+            return 1;
+        }
     }
 
     /// Collect check directives.
@@ -1596,8 +1602,15 @@ int Context::RunMain(std::shared_ptr<DiagsHandler> dh, int argc, char** argv) {
         nullptr,
         DiagsHandler::Kind::Note,
         Location(),
-        fmt::format("[FCHK] Running fchk version {}\n", FCHK_VERSION)
+        std::format("[FCHK] Running fchk version {}\n", FCHK_VERSION)
     );
+
+    /// Check if we should use colours.
+    auto colours_opt = opts.get_or<"--colours">("auto");
+    dh->stream = opts.get<"--stdout">() ? stdout : stderr;
+    dh->enable_colours = colours_opt == "auto"
+                           ? isatty(fileno(dh->stream))
+                           : colours_opt == "always";
 
     Context ctx{
         dh,
