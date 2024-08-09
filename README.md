@@ -19,7 +19,7 @@ This program runs on Linux and Windows, though it is mainly developed on Linux. 
 but is untested. Building with MSVC is supported.
 
 ## Build
-This program uses CMake and requires an up-to-date C++23 compiler. Dependencies (fmtlib and PCRE2)
+This program uses CMake and requires an up-to-date C++23 compiler. Dependencies (mostly PCRE2)
 are downloaded automatically. To build it, just add it as a subdirectory to your CMake project or
 build it separately by invoking CMake as usual:
 ```bash
