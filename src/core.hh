@@ -1,22 +1,22 @@
 #ifndef FCHK_CORE_HH
 #define FCHK_CORE_HH
 
+#include <base/Base.hh>
+#include <base/FS.hh>
 #include <clopts.hh>
 #include <deque>
 #include <functional>
-#include <libassert/assert.hpp>
 #include <map>
 #include <print>
 #include <unordered_set>
 #include <utility>
-#include <utils.hh>
 #include <variant>
 #include <vector>
 
-class Context;
+namespace fchk {
+using namespace base;
 
-#define Assert(cond, ...) Assert(cond, __VA_OPT__(std::format(__VA_ARGS__)))
-#define Unreachable(...)  UNREACHABLE(__VA_OPT__(std::format(__VA_ARGS__)))
+class Context;
 
 /// A decoded source location.
 struct LocInfo {
@@ -35,7 +35,7 @@ struct LocInfoShort {
 /// A file in the context.
 struct File {
     std::string contents;
-    fs::path path;
+    fs::Path path;
 };
 
 /// A source range in a file.
@@ -227,7 +227,7 @@ using Environment = std::vector<EnvEntry>;
 struct EnvironmentRegex {
     std::string re_str;
     std::unordered_set<char> literal_chars;
-    std::unordered_set<std::string, utils::StrHash, std::equal_to<>> defined_captures;
+    StringSet defined_captures;
 
     /// Create a new regular expression.
     ///
@@ -363,7 +363,7 @@ class Context {
         std::vector<Check> checks;
 
         /// Enabled pragmas.
-        utils::Map<std::string, bool> pragmas;
+        StringMap<bool> pragmas;
 
         /// Characters to be treated as literal in regexes.
         std::unordered_set<char> literal_chars;
@@ -390,13 +390,13 @@ class Context {
     std::vector<Test> run_directives;
 
     /// Default pragmas set on the command line.
-    utils::Map<std::string, bool> default_pragmas;
+    StringMap<bool> default_pragmas;
 
     /// Default literal chars set on the command line.
     std::unordered_set<char> default_literal_chars;
 
     /// Definitions for run directives.
-    utils::StrMap definitions;
+    StringMap<std::string> definitions;
 
     /// Stop on an error.
     bool abort_on_error;
@@ -422,9 +422,9 @@ public:
     explicit Context(
         std::shared_ptr<DiagsHandler> dh,
         std::string check,
-        fs::path check_name = "<input>",
+        fs::Path check_name = "<input>",
         std::string prefix = {},
-        utils::Map<std::string, bool> pragmas = {},
+        StringMap<bool> pragmas = {},
         std::unordered_set<char> literal_chars = {},
         std::span<const std::string> defines = {},
         bool abort_on_error = false,
@@ -491,104 +491,6 @@ private:
     /// \return True if the test succeeded.
     void RunTest(Test& t);
 };
-
-/// Helper to parse text from a string.
-class Stream {
-    using SV = std::string_view;
-
-    SV text;
-
-    /// Yield substring until pos and remove it from text.
-    SV yield_until(usz pos, bool remove);
-
-public:
-    static constexpr std::string_view Whitespace = " \t\v\f";
-
-    Stream(SV text) : text(text) {}
-
-    /// Get a range of characters.
-    ///
-    /// If either position is out of bounds, it will be
-    /// clamped to the nearest valid position.
-    [[nodiscard]] auto substr(usz start, usz end) const -> SV;
-
-    /// Get the entire text.
-    [[nodiscard]] auto operator*() const -> SV { return text; }
-
-    /// Check if this stream starts with text.
-    [[nodiscard]] bool at(SV sv) const { return text.starts_with(sv); }
-
-    /// Check if this stream starts with any of a set of characters.
-    [[nodiscard]] bool at_any(SV chars) const {
-        return not empty() and chars.find_first_of(text.front()) != SV::npos;
-    }
-
-    /// Get the current data pointer.
-    [[nodiscard]] auto data() const -> const char* { return text.data(); }
-
-    /// Check if this stream is empty.
-    [[nodiscard]] bool empty() const { return text.empty(); }
-
-    /// Fold whitespace into a single space and trim
-    /// leading and trailing spaces.
-    auto fold_ws() const -> std::string;
-
-    /// Get the first character of the stream.
-    ///
-    /// \return The first character of the stream, or \0
-    /// if the stream is empty
-    [[nodiscard]] char front() { return empty() ? 0 : text.front(); }
-
-    /// Read up to a position.
-    [[nodiscard]] auto read(usz elems, bool discard = false) -> SV;
-
-    /// Read up to a delimiter.
-    ///
-    /// If the delimiter is not found, this returns the rest of the string.
-    [[nodiscard]] auto read_to(SV delim, bool discard = false) -> SV;
-
-    /// Read up to a delimiter or the end of the string.
-    ///
-    /// If the delimiter is not found, this returns an empty string.
-    [[nodiscard]] auto read_to_or_empty(SV delim, bool discard = false) -> SV;
-
-    /// Read up to any of a set of delimiters.
-    [[nodiscard]] auto read_to_any(SV delims, bool discard = false) -> SV;
-
-    /// Read up to any of a set of delimiters.
-    [[nodiscard]] auto read_to_any(std::span<SV> delims, bool discard = false) -> SV;
-
-    /// Read up to the next whitespace character.
-    [[nodiscard]] auto read_to_ws(bool discard = false) -> SV;
-
-    /// Read while a condition is true.
-    template <typename Predicate>
-    [[nodiscard]] auto read_while(Predicate pred, bool discard = false) -> SV {
-        usz pos = 0;
-        while (not text.empty() and pos < text.size() and pred(text[pos])) pos++;
-        return yield_until(pos, discard);
-    }
-
-    /// Get the size of the stream.
-    [[nodiscard]] auto size() const -> usz { return text.size(); }
-
-    /// Skip n characters.
-    auto skip(usz n) -> Stream&;
-
-    /// Skip until a delimiter.
-    auto skip_to(SV delim) -> Stream&;
-
-    /// Skip until any of a set of delimiters.
-    auto skip_to_any(SV delims) -> Stream&;
-
-    /// Skip until any of a set of delimiters.
-    auto skip_to_any(std::span<SV> delims) -> Stream&;
-
-    /// Skip to the next whitespace character.
-    auto skip_to_ws() -> Stream&;
-
-    /// Skip whitespace, not including line breaks.
-    auto skip_ws() -> Stream&;
-};
+}
 
 #endif // FCHK_CORE_HH

@@ -1,3 +1,5 @@
+#include <base/Text.hh>
+#include <clopts.hh>
 #include <cmath>
 #include <core.hh>
 #include <errs.hh>
@@ -12,7 +14,7 @@
 #    include <Windows.h>
 #endif
 
-namespace detail {
+namespace fchk::detail {
 using namespace command_line_options;
 using options = clopts< // clang-format off
     option<"--prefix", "Check prefix to use">,
@@ -29,28 +31,12 @@ using options = clopts< // clang-format off
 >; // clang-format on
 } // namespace detail
 
-void utils::ReplaceAll(
-    std::string& str,
-    std::string_view from,
-    std::string_view to
-) {
-    if (from.empty()) return;
-    for (usz i = 0; i = str.find(from, i), i != std::string::npos; i += to.length())
-        str.replace(i, from.length(), to);
-}
-
-auto utils::NumberWidth(usz number, usz base) -> usz {
-    return number == 0 ? 1 : usz(std::log(number) / std::log(base) + 1);
-}
+using namespace fchk;
 
 namespace {
 /// Check if this is a known builtin.
 constexpr bool IsBuiltin(std::string_view name) {
     return name == "LINE";
-}
-
-constexpr void TrimFront(std::string_view& sv) {
-    while (not sv.empty() and utils::IsWhitespace(sv.front())) sv.remove_prefix(1);
 }
 
 struct ExecutionResult {
@@ -204,15 +190,14 @@ auto RunCommand(
     return er;
 #endif
 }
-
 } // namespace
 
 Context::Context(
     std::shared_ptr<DiagsHandler> dh,
     std::string check,
-    fs::path check_name,
+    fs::Path check_name,
     std::string prefix,
-    utils::Map<std::string, bool> pragmas,
+    StringMap<bool> pragmas,
     std::unordered_set<char> literal_chars,
     std::span<const std::string> defines,
     bool abort_on_error,
@@ -379,32 +364,32 @@ EnvironmentRegex::EnvironmentRegex(
     /// Preprocessing step for typed captures.
     if (captype) {
         std::string processed;
-        Stream s{re_str};
+        stream s{re_str};
         for (;;) {
-            processed += s.read_to("$", true);
-            Stream saved = s;
-            s.skip(1);
+            processed += s.take_until("$");
+            stream saved = s;
+            s.drop();
             if (s.empty()) {
-                processed += *saved;
+                processed += saved.text();
                 break;
             }
 
             /// Find ":".
-            auto capture = s.read_while([](char c) { return std::isalnum(u8(c)) or c == '_'; }, true);
+            auto capture = s.take_while([](char c) { return std::isalnum(u8(c)) or c == '_'; });
 
             /// Got one. Ignore if this is a builtin.
             if (
                 (not builtins_enabled or not IsBuiltin(capture)) and
-                s.at(":") and
-                (s.skip(1), not s.empty() and not s.at_any(" \t\n\r\f\v"))
+                s.starts_with(':') and
+                (s.drop(), not s.empty() and not s.starts_with_any(" \t\n\r\f\v"))
             ) {
-                auto type = s.read_while([](char c) { return std::isalnum(u8(c)) or c == '_'; }, true);
+                auto type = s.take_while([](char c) { return std::isalnum(u8(c)) or c == '_'; });
                 processed += std::format("(?<{}>${})", capture, type);
             }
 
             /// Regular capture.
             else {
-                processed += saved.read(saved.size() - s.size(), true);
+                processed += saved.take(saved.size() - s.size());
                 s = saved;
             }
         }
@@ -412,9 +397,9 @@ EnvironmentRegex::EnvironmentRegex(
     }
 
     /// Find all captures defined by this pattern.
-    Stream s{re_str};
+    stream s{re_str};
     for (;;) {
-        auto group_name = s.skip_to("?<").skip(2).read_to_or_empty(">");
+        auto group_name = s.drop_until("?<").drop(2).take_until_or_empty(">");
         if (s.empty()) break;
         if (IsBuiltin(group_name)) continue;
         defined_captures.emplace(group_name);
@@ -447,7 +432,7 @@ auto SubstituteVars(
     /// Substitute named captures that are not defined by this RE and
     /// convert dollar-style captures that are to PCRE2-style '\k<name>'
     /// captures.
-    for (Stream s{input};;) {
+    for (stream s{input};;) {
         static constinit std::array<std::string_view, 2> delims{R"(\k<)", "$"sv};
         static const auto IsCaptureGroupName = [](char c) { return std::isalnum(u8(c)) or c == '_'; };
         const auto Add = [&](std::string_view capture, bool escape) {
@@ -459,9 +444,9 @@ auto SubstituteVars(
 
                     /// Directive may be followed by a '+' or '-' and a number.
                     auto lc = loc.seek_line_column();
-                    if (s.at_any("+-")) {
-                        bool negative = s.at("-");
-                        auto num = s.skip(1).read_while([](char c) { return '0' <= c and c <= '9'; }, true);
+                    if (s.starts_with_any("+-")) {
+                        bool negative = s.starts_with("-");
+                        auto num = s.drop().take_while([](char c) { return '0' <= c and c <= '9'; });
                         isz i{};
                         auto res = std::from_chars(num.begin(), num.end(), i);
                         if (res.ec != std::error_code{}) throw Regex::Exception(
@@ -505,7 +490,7 @@ auto SubstituteVars(
         };
 
         /// Get start of next capture group.
-        auto fragment = s.read_to_any(delims, true);
+        auto fragment = s.take_until_any(delims);
         subst += fragment;
 
         /// An '$' on its own is not a capture group, so we always need
@@ -515,23 +500,23 @@ auto SubstituteVars(
 
         /// PCRE2-style '\k<name>' capture group.
         if (s.front() == '\\') {
-            s.skip(R"(\k<)"sv.size());
-            auto name = s.read_while(IsCaptureGroupName, true);
+            s.drop(R"(\k<)"sv.size());
+            auto name = s.take_while(IsCaptureGroupName);
             if (re and re->defined_captures.contains(name)) subst += std::format("\\k<{}>", name);
             else Add(name, false);
-            s.skip(">"sv.size());
+            s.drop(">"sv.size());
         }
 
         /// Dollar capture, w/ optional escaping.
         else {
             bool escape = false;
-            s.skip("$"sv.size());
-            if (s.at("$")) {
-                s.skip("$"sv.size());
+            s.drop("$"sv.size());
+            if (s.starts_with("$")) {
+                s.drop("$"sv.size());
                 escape = true;
             }
 
-            auto name = s.read_while(IsCaptureGroupName, true);
+            auto name = s.take_while(IsCaptureGroupName);
             if (re and re->defined_captures.contains(name)) subst += std::format("\\k<{}>", name);
             else Add(name, escape);
         }
@@ -616,7 +601,7 @@ void DiagsHandler::report_impl(Context* ctx, Kind kind, Location where, std::str
     print("{}\n", after);
 
     /// Determine the number of digits in the line number.
-    const auto digits = utils::NumberWidth(line);
+    const auto digits = std::to_string(line).size();
 
     /// Determine the column width of the text.
     static const auto ColumnWidth = [](std::string_view text) {
@@ -646,126 +631,9 @@ void DiagsHandler::write(std::string_view text) {
 }
 
 /// ===========================================================================
-///  Stream
-/// ===========================================================================
-auto Stream::substr(usz start, usz end) const -> SV {
-    start = std::min(start, text.size() - 1);
-    end = std::min(end, text.size());
-    return text.substr(start, end - start);
-}
-
-auto Stream::fold_ws() const -> std::string {
-    std::string out;
-    Stream s{Trim(text)};
-    for (;;) {
-        out += s.read_to_ws(true);
-        if (s.empty()) return out;
-        out += ' ';
-        s.skip_ws();
-    }
-}
-
-auto Stream::read(usz elems, bool discard) -> SV {
-    return yield_until(elems, discard);
-}
-
-auto Stream::read_to(SV delim, bool discard) -> SV {
-    auto pos = text.find(delim);
-    if (pos == SV::npos) {
-        auto ret = text;
-        if (discard) text = "";
-        return ret;
-    }
-
-    return yield_until(pos, discard);
-}
-
-auto Stream::read_to_any(SV delims, bool discard) -> SV {
-    auto pos = text.find_first_of(delims);
-    if (pos == SV::npos) {
-        auto ret = text;
-        if (discard) text = "";
-        return ret;
-    }
-
-    return yield_until(pos, discard);
-}
-
-auto Stream::read_to_any(std::span<SV> delims, bool discard) -> SV {
-    auto poss = vws::transform(delims, [&](auto&& d) { return text.find(d); });
-    auto min = rgs::min(poss);
-    if (min == SV::npos) {
-        auto ret = text;
-        if (discard) text = "";
-        return ret;
-    }
-
-    return yield_until(min, discard);
-}
-
-auto Stream::read_to_or_empty(SV delim, bool discard) -> SV {
-    auto pos = text.find(delim);
-    if (pos == SV::npos) {
-        if (discard) text = "";
-        return "";
-    }
-
-    return yield_until(pos, discard);
-}
-
-auto Stream::read_to_ws(bool discard) -> SV {
-    return read_to_any(Whitespace, discard);
-}
-
-auto Stream::skip(usz n) -> Stream& {
-    text.remove_prefix(std::min(n, text.size()));
-    return *this;
-}
-
-auto Stream::skip_to(SV delim) -> Stream& {
-    auto pos = text.find(delim);
-    if (pos == SV::npos) text = "";
-    else text.remove_prefix(pos);
-    return *this;
-}
-
-auto Stream::skip_to_any(SV delims) -> Stream& {
-    auto pos = text.find_first_of(delims);
-    if (pos == SV::npos) text = "";
-    else text.remove_prefix(pos);
-    return *this;
-}
-
-auto Stream::skip_to_any(std::span<SV> delims) -> Stream& {
-    auto poss = vws::transform(delims, [&](auto&& d) { return text.find(d); });
-    auto min = rgs::min(poss);
-    if (min == SV::npos) text = "";
-    else text.remove_prefix(min);
-    return *this;
-}
-
-auto Stream::skip_to_ws() -> Stream& {
-    return skip_to_any(Whitespace);
-}
-
-auto Stream::skip_ws() -> Stream& {
-    auto pos = text.find_first_not_of(Whitespace);
-    if (pos == SV::npos) text = "";
-    else text.remove_prefix(pos);
-    return *this;
-}
-
-auto Stream::yield_until(usz pos, bool remove) -> SV {
-    auto ret = text.substr(0, pos);
-    if (remove) text.remove_prefix(pos);
-    return ret;
-}
-
-/// ===========================================================================
 ///  Implementation
 /// ===========================================================================
-
-namespace detail {
+namespace fchk::detail {
 class Matcher {
     struct Line {
         std::string text;
@@ -800,7 +668,7 @@ class Matcher {
             for (auto [i, line] : vws::enumerate(rgs::subrange{prev, M.input_lines.end()})) {
                 static constexpr usz max_lines = 7;
                 if (usz(i) >= max_lines) break;
-                M.C->dh->print(" {: >{}} │ ", start + usz(i), utils::NumberWidth(start + max_lines - 1));
+                M.C->dh->print(" {: >{}} │ ", start + usz(i), std::to_string(start + max_lines - 1).size());
                 if (i == 1 - (lc.line == 1)) {
                     M.C->dh->print(
                         "{}{}\n{}",
@@ -823,7 +691,7 @@ class Matcher {
     Matcher(Context& ctx, File& input_file, std::span<Check> checks) : C{&ctx}, input_file{input_file}, checks{checks} {
         const auto ProcessLine = [&](auto&& r) -> Line {
             auto sv = std::string_view{&*r.begin(), usz(rgs::distance(r))};
-            return {Stream{sv}.fold_ws(), ctx.LocationIn(sv, input_file)};
+            return {stream{sv}.fold_ws(), ctx.LocationIn(sv, input_file)};
         };
 
         /// Split input into lines.
@@ -995,9 +863,9 @@ class Matcher {
             /// here is an error.
             case Directive::ExpandDefine: {
                 auto& line = std::get<std::string>(chk->data);
-                Stream s{line};
-                auto name = s.read_to_ws(true);
-                auto value = *s.skip_ws();
+                stream s{line};
+                auto name = s.take_until_ws();
+                auto value = s.trim().text();
 
                 /// Expand vars.
                 try {
@@ -1009,9 +877,9 @@ class Matcher {
 
             case Directive::Define: {
                 auto& line = std::get<std::string>(chk->data);
-                Stream s{line};
-                auto name = s.read_to_ws(true);
-                auto value = *s.skip_ws();
+                stream s{line};
+                auto name = s.take_until_ws();
+                auto value = s.trim().text();
                 Define(name, value, false);
             } break;
 
@@ -1198,10 +1066,10 @@ static std::unordered_map<std::string_view, Directive> NameDirectiveMap{
 
 const auto RunWithPrefixDirectiveNameStart = std::format("{}[", DirectiveNames[+Directive::Run]);
 
-} // namespace detail
+} // namespace fchk::detail
 
 void Context::CollectDirectives(PrefixState& state) {
-    Stream chfile{check_file.contents};
+    stream chfile{check_file.contents};
 
     /// Check if a directive causes a new test to be run.
     auto IsRunDirective = [](Directive dir) {
@@ -1215,17 +1083,31 @@ void Context::CollectDirectives(PrefixState& state) {
     };
 
     /// Read a directive’s argument, if any.
-    auto ReadDirectiveArg = [&] { return chfile.at("\n") ? "" : Trim(chfile.skip_to_ws().skip_ws().read_to("\n")); };
+    auto ReadArgument = [&] -> std::string_view {
+        return stream(chfile.take_until("\n")).trim().text();
+    };
 
     /// Find all directives in the file.
     while (not chfile.empty()) {
-        chfile.skip_to(state.prefix).skip(state.prefix.size()).skip_ws();
+        /// Only a line that starts with the prefix followed by whitespace is a directive.
+        chfile.drop_until(state.prefix).drop(state.prefix.size());
+        if (not chfile.starts_with_any(stream::whitespace())) {
+            chfile.drop_until('\n').drop();
+            continue;
+        }
+
+        /// Delete the whitespace before the directive. If we end up eating a newline too,
+        /// then this line contains only whitespace.
+        if (chfile.take_while_any(stream::whitespace()).contains('\n'))
+            continue;
 
         /// Handle run directives.
-        if (chfile.at(detail::RunWithPrefixDirectiveNameStart)) {
-            auto prefix = Trim(chfile.read_to_any("]\r\n", true));
-            if (not chfile.at("]")) continue;
-            prefix.remove_prefix(detail::RunWithPrefixDirectiveNameStart.size());
+        if (chfile.consume(detail::RunWithPrefixDirectiveNameStart)) {
+            auto prefix = stream(chfile.take_until_any("]\r\n")).trim().text();
+            if (not chfile.starts_with("]")) {
+                chfile.drop_until_any("\r\n");
+                continue;
+            }
 
             /// If there currently is no state for this prefix, create it.
             PrefixState* new_state;
@@ -1241,19 +1123,22 @@ void Context::CollectDirectives(PrefixState& state) {
                 new_state = &*it;
             }
 
+            /// Drop the ']'.
+            chfile.drop();
+
             /// Add a run directive.
-            run_directives.emplace_back(ReadDirectiveArg(), new_state);
+            run_directives.emplace_back(ReadArgument(), new_state);
             continue;
         }
 
         /// Read directive.
-        auto dir = Trim(chfile.read_to_any(" \t\v\f\r\n", true));
+        auto dir = stream(chfile.take_until_any(" \t\v\f\r\n")).trim().text();
         if (dir.empty()) continue;
 
         /// Check if this really is a directive.
         auto it = detail::NameDirectiveMap.find(dir);
         if (it == detail::NameDirectiveMap.end()) continue;
-        auto value = ReadDirectiveArg();
+        auto value = ReadArgument();
 
         /// Handle spurious prefix directives
         if (it->second == Directive::Prefix) {
@@ -1373,11 +1258,11 @@ void Context::CollectDirectives(PrefixState& state) {
                     goto regex_directive;
                 }
 
-                Add(Stream{value}.fold_ws(), d);
+                Add(stream{value}.fold_ws(), d);
                 break;
 
             case Directive::Undefine:
-                Add(Stream{value}.fold_ws(), d);
+                Add(stream{value}.fold_ws(), d);
                 break;
 
             case Directive::Begin:
@@ -1388,7 +1273,7 @@ void Context::CollectDirectives(PrefixState& state) {
             /// for expanded definitions will be substituted at match time instead.
             case Directive::Define:
             case Directive::ExpandDefine: {
-                auto text = Stream{value}.fold_ws();
+                auto text = stream{value}.fold_ws();
                 SubstituteNoCapAndLiterals(text);
                 Add(text, d);
             } break;
@@ -1400,9 +1285,9 @@ void Context::CollectDirectives(PrefixState& state) {
                     continue;
                 }
 
-                auto s = Stream{value};
-                auto name = s.read_to_ws(true);
-                auto arg = s.skip_ws().read_to_ws(true);
+                auto s = stream{value};
+                auto name = s.take_until_ws();
+                auto arg = s.trim_front().take_until_ws();
 
                 /// Some pragmas require special handling.
                 if (name == "lit" or name == "nolit") {
@@ -1479,8 +1364,8 @@ void Context::CollectDirectives(PrefixState& state) {
                 }
 
                 /// Warn about junk.
-                if (not s.skip_ws().empty()) Warning(
-                    LocationIn(*s, check_file),
+                if (not s.trim_front().empty()) Warning(
+                    LocationIn(s.text(), check_file),
                     "Junk at end of pragma ignored"
                 );
             } break;
@@ -1496,12 +1381,12 @@ void Context::CollectDirectives(PrefixState& state) {
                 /// everywhere we use a regular expression since there is no point in
                 /// trying to match anything with faulty regular expressions.
                 try {
-                    auto expr = Stream{value}.fold_ws();
+                    auto expr = stream{value}.fold_ws();
                     SubstituteNoCapAndLiterals(expr);
 
                     /// Construct an environment regex if captures are used.
                     static constinit std::array<std::string_view, 3> delims{"?<"sv, R"(\k<)", "$"sv};
-                    if (Stream{value}.skip_to_any(delims).size() >= 2) {
+                    if (stream{value}.drop_until_any(delims).size() >= 2) {
                         Add(EnvironmentRegex{expr, state.literal_chars, state.pragmas["captype"], enable_builtins}, d);
                     } else {
                         Add(Regex{*this, expr}, d);
@@ -1530,16 +1415,15 @@ auto Context::CreatePrefixState(std::string prefix) -> PrefixState* {
 int Context::Run() {
     /// If we don’t know what the prefix is, look for a
     /// prefix directive.
-    Stream chfile{check_file.contents};
+    stream chfile{check_file.contents};
     const bool have_command_line_prefix = not states_by_prefix[0].prefix.empty();
     if (not have_command_line_prefix) {
-        states_by_prefix[0].prefix = Trim(
-            Stream{chfile}
-                .skip_to(DirectiveNames[+Directive::Prefix])
-                .skip_to_ws()
-                .skip_ws()
-                .read_to("\n")
-        );
+        states_by_prefix[0].prefix = stream(stream{chfile} // clang-format off
+            .drop_until(DirectiveNames[+Directive::Prefix])
+            .drop_until_ws()
+            .trim_front()
+            .take_until("\n")
+        ).trim().text(); // clang-format on
 
         if (states_by_prefix[0].prefix.empty()) {
             Error(
@@ -1579,7 +1463,7 @@ int Context::RunMain(std::shared_ptr<DiagsHandler> dh, int argc, char** argv) {
     auto opts = detail::options::parse(argc, argv, dh->get_error_handler());
 
     /// User-provided prefix may not be empty.
-    if (auto pre = opts.get<"--prefix">(); pre and Trim(*pre).empty()) {
+    if (auto pre = opts.get<"--prefix">(); pre and stream(*pre).trim().empty()) {
         dh->report(
             nullptr,
             DiagsHandler::Kind::Error,
@@ -1590,12 +1474,12 @@ int Context::RunMain(std::shared_ptr<DiagsHandler> dh, int argc, char** argv) {
     }
 
     /// Collect pragmas.
-    utils::Map<std::string, bool> pragmas;
-    for (auto v : *opts.get<"-P">()) pragmas[v] = true;
+    StringMap<bool> pragmas;
+    for (auto v : opts.get<"-P">()) pragmas[v] = true;
 
     /// Collect literal chars.
     std::unordered_set<char> literal_chars;
-    for (auto& v : *opts.get<"-l">())
+    for (auto v : opts.get<"-l">())
         for (auto c : v)
             literal_chars.insert(c);
 
@@ -1620,7 +1504,7 @@ int Context::RunMain(std::shared_ptr<DiagsHandler> dh, int argc, char** argv) {
         opts.get_or<"--prefix">(""),
         std::move(pragmas),
         std::move(literal_chars),
-        *opts.get<"-D">(),
+        opts.get<"-D">(),
         opts.get<"-a">(),
         opts.get<"-v">(),
         not opts.get<"--nobuiltin">(),
@@ -1637,7 +1521,7 @@ void Context::RunTest(Test& test) {
 
     /// Warn about unknown '%' defines.
     if (auto pos = cmd.find('%'); pos != std::string::npos) {
-        auto def = Stream{std::string_view(cmd.data() + pos, cmd.size() - pos)}.read_to_ws();
+        auto def = stream{std::string_view(cmd.data() + pos, cmd.size() - pos)}.take_until_ws();
 
         /// Find location of directive in original string.
         std::string_view def_str = test.run_directive;

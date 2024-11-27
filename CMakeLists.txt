@@ -1,5 +1,5 @@
 cmake_minimum_required(VERSION 3.20)
-project(fchk VERSION 3.0.3 LANGUAGES CXX)
+project(fchk VERSION 3.1.0 LANGUAGES CXX)
 
 ## ============================================================================
 ##  Global CMake Variables.
@@ -158,15 +158,14 @@ endif()
 ## ============================================================================
 include(FetchContent)
 
-## Add clopts.
-message(STATUS "Downloading Clopts...")
-FetchContent_Declare(_fchk_clopts
-    GIT_REPOSITORY https://github.com/Sirraide/clopts.git
-    GIT_TAG v2.2.0
-    SOURCE_DIR "${CMAKE_CURRENT_BINARY_DIR}/libs/clopts"
+## Get libbase.
+message(STATUS "Downloading libbase ...")
+set(LIBBASE_CXXFLAGS -fno-exceptions -fno-rtti -fwrapv -fnew-infallible)
+FetchContent_Declare(libbase
+    GIT_REPOSITORY https://github.com/Sirraide/libbase
+    GIT_TAG master
 )
-FetchContent_MakeAvailable(_fchk_clopts)
-target_include_directories(_fchk_options INTERFACE "${CMAKE_CURRENT_BINARY_DIR}/libs/clopts/include")
+FetchContent_MakeAvailable(libbase)
 
 ## Find PCRE2.
 set(PCRE2_SUPPORT_JIT ON)
@@ -180,15 +179,6 @@ FetchContent_Declare(_fchk_pcre2
 )
 FetchContent_MakeAvailable(_fchk_pcre2)
 
-## Get libassert.
-include(FetchContent)
-FetchContent_Declare(
-  _fchk_libassert
-  GIT_REPOSITORY https://github.com/jeremy-rifkin/libassert.git
-  GIT_TAG        v2.0.2
-)
-FetchContent_MakeAvailable(_fchk_libassert)
-
 ## Suppress warnings for PCRE, otherwise there will be a lot of them
 file(
     GLOB_RECURSE _fchk_pcre2_sources
@@ -197,7 +187,7 @@ file(
 )
 
 ## Link against libfmt.
-target_link_libraries(_fchk_options INTERFACE fmt pcre2-8 libassert::assert)
+target_link_libraries(_fchk_options INTERFACE pcre2-8 libbase)
 
 ## ‘src’ should be an include directory.
 target_include_directories(_fchk_options INTERFACE src)
@@ -232,7 +222,7 @@ endif()
 ## ============================================================================
 ##  Executables and libraries.
 ## ============================================================================
-add_library(fchk-core STATIC src/core.cc src/core.hh src/utils.hh src/errs.hh)
+add_library(fchk-core STATIC src/core.cc src/core.hh src/errs.hh)
 add_executable(fchk src/main.cc)
 
 ## Project dir so we can strip it from diags.

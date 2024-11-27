@@ -5,6 +5,7 @@
 
 using namespace Catch::literals;
 using namespace std::literals;
+using namespace fchk;
 
 using SV = std::string_view;
 
@@ -77,10 +78,10 @@ void ExpectOutput(
     std::string prefix = "#"
 ) {
     auto dh = std::make_shared<TestDiagsHandler>();
-    Context ctx{dh, std::string{Trim(input)}, "<input>", std::move(prefix)};
+    Context ctx{dh, std::string{stream(input).trim().text()}, "<input>", std::move(prefix)};
     auto res = ctx.Run();
     CHECK(res == ret_val);
-    CHECK(Trim(dh->output) == Trim(output));
+    CHECK(stream(dh->output).trim().text() == stream(output).trim().text());
 }
 
 void ExpectOutput2(
@@ -253,3 +254,36 @@ TEST_CASE("Regular expression matching") {
         "# re+ [a-z]+"
     );
 }
+
+TEST_CASE("Pragma nocap") {
+    ExpectMatch(
+        "Y\n"
+        "() (test) ))((",
+        "# p nocap\n"
+        "# * Y\n"
+        "# re+ () (?:(test)) ))(("
+    );
+}
+
+TEST_CASE("DuplicatePrefix") {
+    ExpectMatch(
+        "Y\n"
+        "() (test) ))((",
+        "# p nocap\n"
+        "## p nocap off\n" // This is not a directive because the prefix isn’t followed by a space.
+        "# * Y\n"
+        "# re+ () (?:(test)) ))(("
+    );
+}
+
+TEST_CASE("Bug#1") {
+    ExpectMatch(
+        "Y\n"
+        "() (test) ))((",
+        "#\n"
+        "# p nocap\n"
+        "# * Y\n"
+        "# re+ () (?:(test)) ))(("
+    );
+}
+
