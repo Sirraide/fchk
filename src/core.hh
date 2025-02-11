@@ -149,7 +149,7 @@ static_assert(
 );
 
 class Regex {
-    std::string_view raw;
+    std::string raw;
     void* re_ptr{};
     void* data_ptr{};
 
@@ -184,7 +184,7 @@ public:
     /// \param C Context for issuing warnings.
     /// \param pattern The pattern to match.
     /// \throw Regex::Exception if the pattern is invalid.
-    explicit Regex(Context& C, std::string_view pattern);
+    explicit Regex(Context& C, std::string pattern);
 
     /// Match the regular expression against a string.
     ///

@@ -298,7 +298,7 @@ Regex::~Regex() noexcept {
     pcre2_match_data_free(static_cast<pcre2_match_data*>(data_ptr));
 }
 
-Regex::Regex(Context& C, std::string_view pattern) {
+Regex::Regex(Context& C, std::string pattern) {
     int err{};
     usz erroffs{};
     auto expr = pcre2_compile(
@@ -334,7 +334,7 @@ Regex::Regex(Context& C, std::string_view pattern) {
         }
     */
 
-    raw = pattern;
+    raw = std::move(pattern);
     re_ptr = expr;
     data_ptr = pcre2_match_data_create_from_pattern(expr, nullptr);
 }
@@ -1387,9 +1387,9 @@ void Context::CollectDirectives(PrefixState& state) {
                     /// Construct an environment regex if captures are used.
                     static constinit std::array<std::string_view, 3> delims{"?<"sv, R"(\k<)", "$"sv};
                     if (stream{value}.drop_until_any(delims).size() >= 2) {
-                        Add(EnvironmentRegex{expr, state.literal_chars, state.pragmas["captype"], enable_builtins}, d);
+                        Add(EnvironmentRegex{std::move(expr), state.literal_chars, state.pragmas["captype"], enable_builtins}, d);
                     } else {
-                        Add(Regex{*this, expr}, d);
+                        Add(Regex{*this, std::move(expr)}, d);
                     }
                 } catch (const Regex::Exception& e) {
                     Error(

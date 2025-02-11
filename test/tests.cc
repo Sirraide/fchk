@@ -1,3 +1,4 @@
+#include <base/Text.hh>
 #include <catch2/catch_all.hpp>
 #include <catch2/catch_test_macros.hpp>
 #include <core.hh>
@@ -91,7 +92,7 @@ void ExpectOutput2(
     std::string_view output
 ) {
     utils::ReplaceAll(input, "\n", "\\n"); // Escape newlines so this is parsed as one line.
-    ExpectOutput(std::format("# R echo -e \"{}\"\n{}", input, checks), ret_val, output);
+    ExpectOutput(std::format("# R echo -e \"{}\"\n{}", utils::Escape(input, true), checks), ret_val, output);
 }
 
 void ExpectMatch(std::string in, std::string_view tests) {
@@ -287,3 +288,12 @@ TEST_CASE("Bug#1") {
     );
 }
 
+TEST_CASE("Bug#2") {
+    ExpectMatch(
+        "abort at </home/ae/projects/Source/test/CG/assert.src:6:5> __src_assert_fail(s\"a == b\", nil)",
+        "# p nocap\n"
+        "# p captype\n"
+        "# p nolit .\n"
+        "# re+   abort at .+ __src_assert_fail(s\"a == b\", nil)"
+    );
+}
