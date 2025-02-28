@@ -12,6 +12,7 @@
 #include <utility>
 #include <variant>
 #include <vector>
+#include <base/Regex.hh>
 
 namespace fchk {
 using namespace base;
@@ -150,8 +151,10 @@ static_assert(
 
 class Regex {
     std::string raw;
-    void* re_ptr{};
-    void* data_ptr{};
+
+    // This is mutable because 'regex::match' is not 'const' because it
+    // uses internal state and thus isn’t thread-safe.
+    mutable regex re;
 
 public:
     struct Exception : std::exception {
@@ -162,21 +165,6 @@ public:
             : message(std::format(fmt, std::forward<Args>(args)...)) {}
     };
 
-    ~Regex() noexcept;
-
-    Regex(const Regex&) = delete;
-    Regex& operator=(const Regex&) = delete;
-
-    Regex(Regex&& other) noexcept
-        : re_ptr(std::exchange(other.re_ptr, nullptr)),
-          data_ptr(std::exchange(other.data_ptr, nullptr)) {}
-
-    Regex& operator=(Regex&& other) noexcept {
-        std::swap(re_ptr, other.re_ptr);
-        std::swap(data_ptr, other.data_ptr);
-        return *this;
-    }
-
     /// Create a new regular expression.
     ///
     /// This constructor is explicit because it may throw.
@@ -184,27 +172,13 @@ public:
     /// \param C Context for issuing warnings.
     /// \param pattern The pattern to match.
     /// \throw Regex::Exception if the pattern is invalid.
-    explicit Regex(Context& C, std::string pattern);
+    explicit Regex(std::string pattern) : raw{std::move(pattern)}, re{regex::create(raw).value()} {}
 
     /// Match the regular expression against a string.
     ///
     /// \param str The string to match.
-    /// \param flags Flags to pass to the regex engine.
     /// \return Whether the match succeeded.
-    bool operator()(std::string_view str, u32 flags) const noexcept { return match(str, flags); }
-
-    /// Match the regular expression against a string.
-    ///
-    /// \param str The string to match.
-    /// \param flags Flags to pass to the regex engine.
-    /// \return Whether the match succeeded.
-    bool match(std::string_view str, u32 flags) const noexcept;
-
-    /// Get match data pointer.
-    [[nodiscard]] auto data() const noexcept -> void* { return data_ptr; }
-
-    /// Get regular expression pointer.
-    [[nodiscard]] auto ptr() const noexcept -> void* { return re_ptr; }
+    bool match(std::string_view str) const noexcept;
 
     /// Get raw text.
     [[nodiscard]] auto raw_text() const noexcept -> std::string_view { return raw; }

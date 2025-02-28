@@ -5,10 +5,6 @@
 #include <errs.hh>
 #include <unordered_map>
 
-#define PCRE2_CODE_UNIT_WIDTH 8
-#define PCRE2_STATIC          1
-#include <pcre2.h>
-
 #ifdef _WIN32
 #    define NOMINMAX
 #    include <Windows.h>
@@ -293,65 +289,8 @@ struct RedefError : std::exception {
     RedefError(std::string var) : var{std::move(var)} {}
 };
 
-Regex::~Regex() noexcept {
-    pcre2_code_free(static_cast<pcre2_code*>(re_ptr));
-    pcre2_match_data_free(static_cast<pcre2_match_data*>(data_ptr));
-}
-
-Regex::Regex(Context& C, std::string pattern) {
-    int err{};
-    usz erroffs{};
-    auto expr = pcre2_compile(
-        reinterpret_cast<PCRE2_SPTR8>(pattern.data()),
-        pattern.size(),
-        PCRE2_DOTALL,
-        &err,
-        &erroffs,
-        nullptr
-    );
-
-    /// Compilation failed.
-    if (not expr) {
-        std::string buffer;
-        buffer.resize(4'096);
-        auto sz = pcre2_get_error_message(
-            err,
-            reinterpret_cast<PCRE2_UCHAR8*>(buffer.data()),
-            buffer.size()
-        );
-
-        if (sz == PCRE2_ERROR_BADDATA) C.Warning(Location(), "PCRE error code is invalid");
-        else if (sz == PCRE2_ERROR_NOMEMORY) C.Warning(Location(), "PCRE error buffer is too small to accommodate error message");
-        else buffer.resize(usz(sz));
-        throw Exception("{}", std::move(buffer));
-    }
-
-    /*
-        /// JIT-compile the RE, if possible.
-        if (pcre2_jit_compile(expr, PCRE2_JIT_COMPLETE) != 0) {
-            pcre2_code_free(expr);
-            throw Exception("Failed to JIT compile regex");
-        }
-    */
-
-    raw = std::move(pattern);
-    re_ptr = expr;
-    data_ptr = pcre2_match_data_create_from_pattern(expr, nullptr);
-}
-
-bool Regex::match(std::string_view str, u32 flags = 0) const noexcept {
-    auto re = static_cast<pcre2_code*>(re_ptr);
-    auto data = static_cast<pcre2_match_data*>(data_ptr);
-    int code = pcre2_match(
-        re,
-        reinterpret_cast<PCRE2_SPTR8>(str.data()),
-        str.size(),
-        0,
-        flags,
-        data,
-        nullptr
-    );
-    return code >= 0;
+bool Regex::match(std::string_view str) const noexcept {
+    return re.match(str);
 }
 
 EnvironmentRegex::EnvironmentRegex(
@@ -709,23 +648,15 @@ class Matcher {
                 throw RedefError(c);
 
         /// Compile the RE and execute it.
-        Regex expr{*C, re.substitute_vars(*C, check_location, env)};
-        auto res = expr.match(in->text, 0);
+        regex expr{re.substitute_vars(*C, check_location, env)};
+        auto res = expr.match(in->text);
         if (not res) return false;
 
         /// If the RE matches, extract the captures.
-        auto data = static_cast<pcre2_match_data*>(expr.data());
-        auto ov = pcre2_get_ovector_pointer(data);
         for (const auto& name : re.defined_captures) {
-            auto code = pcre2_substring_number_from_name(
-                static_cast<pcre2_code*>(expr.ptr()),
-                reinterpret_cast<PCRE2_SPTR>(name.data())
-            );
-
-            if (code < 0) throw Regex::Exception("Failed to get capture index for '{}'", name);
-            auto start = ov[2 * code];
-            auto end = ov[2 * code + 1];
-            Define(name, in->text.substr(start, end - start), true);
+            auto cap = expr[name];
+            if (not cap) throw Regex::Exception("Failed to get capture index for '{}'", name);
+            Define(name, cap->extract(std::string_view{in->text}), true);
         }
 
         return true;
@@ -974,7 +905,7 @@ class Matcher {
             /// Check that this line does not match a regular expression.
             case Directive::RegexCheckNotSame: {
                 if (auto re = std::get_if<Regex>(&chk->data)) {
-                    if (re->match(in->text, 0)) {
+                    if (re->match(in->text)) {
                         C->Error(chk->loc, "Input contains prohibited string");
                         context.print("In this line");
                     }
@@ -1389,7 +1320,7 @@ void Context::CollectDirectives(PrefixState& state) {
                     if (stream{value}.drop_until_any(delims).size() >= 2) {
                         Add(EnvironmentRegex{std::move(expr), state.literal_chars, state.pragmas["captype"], enable_builtins}, d);
                     } else {
-                        Add(Regex{*this, std::move(expr)}, d);
+                        Add(Regex{std::move(expr)}, d);
                     }
                 } catch (const Regex::Exception& e) {
                     Error(

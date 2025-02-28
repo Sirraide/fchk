@@ -167,27 +167,8 @@ FetchContent_Declare(libbase
 )
 FetchContent_MakeAvailable(libbase)
 
-## Find PCRE2.
-set(PCRE2_SUPPORT_JIT ON)
-set(PCRE2_BUILD_PCRE2GREP OFF)
-set(PCRE2_BUILD_TESTS OFF)
-message(STATUS "Downloading PCRE2 ...")
-FetchContent_Declare(_fchk_pcre2
-    GIT_REPOSITORY https://github.com/PCRE2Project/pcre2
-    GIT_TAG pcre2-10.42
-    SOURCE_DIR "${CMAKE_CURRENT_BINARY_DIR}/libs/pcre2"
-)
-FetchContent_MakeAvailable(_fchk_pcre2)
-
-## Suppress warnings for PCRE, otherwise there will be a lot of them
-file(
-    GLOB_RECURSE _fchk_pcre2_sources
-    ${CMAKE_CURRENT_BINARY_DIR}/libs/pcre2/*.c
-    ${CMAKE_CURRENT_BINARY_DIR}/libs/pcre2/*.h
-)
-
 ## Link against libfmt.
-target_link_libraries(_fchk_options INTERFACE pcre2-8 libbase)
+target_link_libraries(_fchk_options INTERFACE libbase)
 
 ## ‘src’ should be an include directory.
 target_include_directories(_fchk_options INTERFACE src)
