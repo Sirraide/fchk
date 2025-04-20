@@ -34,7 +34,7 @@ struct LocInfoShort {
 };
 
 /// A file in the context.
-struct File {
+struct CheckFile {
     std::string contents;
     fs::Path path;
 };
@@ -43,10 +43,10 @@ struct File {
 struct Location {
     u32 pos{};
     u32 len{};
-    File* file{};
+    CheckFile* file{};
 
     constexpr Location() = default;
-    constexpr Location(u32 pos, u16 len, File* file)
+    constexpr Location(u32 pos, u16 len, CheckFile* file)
         : pos(pos), len(len), file(file) {}
 
     /// Create a new location that spans two locations.
@@ -355,7 +355,7 @@ class Context {
     std::shared_ptr<DiagsHandler> dh;
 
     /// Checks
-    File check_file;
+    CheckFile check_file;
 
     /// State for each prefix. 0 is the default one.
     std::deque<PrefixState> states_by_prefix;
@@ -372,6 +372,10 @@ class Context {
     /// Definitions for run directives.
     StringMap<std::string> definitions;
 
+    /// Updated output, prefixed by prefixes. Only used for '--update'.
+    std::string updated_output;
+
+public:
     /// Stop on an error.
     bool abort_on_error;
 
@@ -381,11 +385,13 @@ class Context {
     /// Enable builtin magic variables.
     bool enable_builtins;
 
+    /// Update tests instead of actually checking them.
+    bool update;
+
     /// Error flag.
     mutable bool has_error = false;
     mutable bool has_diag = false;
 
-public:
     friend Location;
     friend detail::Matcher;
 
@@ -403,7 +409,8 @@ public:
         std::span<const std::string> defines = {},
         bool abort_on_error = false,
         bool verbose = false,
-        bool enable_builtins = true
+        bool enable_builtins = true,
+        bool update = false
     );
 
     /// Check if builtins are enabled.
@@ -415,7 +422,7 @@ public:
     /// from the file, we ensure that only string views can be passed
     /// in.
     template <std::same_as<std::string_view> SV>
-    [[nodiscard]] auto LocationIn(SV sv, File& file) const -> Location {
+    [[nodiscard]] auto LocationIn(SV sv, CheckFile& file) const -> Location {
         auto start = sv.data() - file.contents.data();
         return Location{u32(start), u16(sv.size()), &file};
     }

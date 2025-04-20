@@ -28,6 +28,9 @@ if (CMAKE_CXX_COMPILER_ID STREQUAL "GNU" OR CMAKE_CXX_COMPILER_ID STREQUAL "Clan
     endif()
 endif()
 
+## Temporary fix until our dependencies have fixed some libstdc++ deprecation warnings.
+add_compile_options(-Wno-deprecated-declarations)
+
 ## ============================================================================
 ##  Compiler options.
 ## ============================================================================
@@ -231,7 +234,7 @@ if (FCHK_TEST_FCHK)
     FetchContent_Declare(
       Catch2
       GIT_REPOSITORY https://github.com/catchorg/Catch2.git
-      GIT_TAG        v3.4.0
+      GIT_TAG        v3.8.1
     )
 
     FetchContent_MakeAvailable(Catch2)

@@ -297,3 +297,22 @@ TEST_CASE("Bug#2") {
         "# re+   abort at .+ __src_assert_fail(s\"a == b\", nil)"
     );
 }
+
+TEST_CASE("Ensure that 'update' works") {
+    static constexpr std::string_view path = FCHK_PROJECT_DIR "/test/inputs/update.txt";
+    auto dh = std::make_shared<TestDiagsHandler>();
+    std::array args {
+        "fchk",
+        path.data(),
+        "--prefix",
+        "#",
+        "--update",
+    };
+
+    // Copy the file contents because who knows what happens to the map if the file changes...
+    auto before = std::string(File::Read(path).value().view());
+    auto res = Context::RunMain(dh, int(args.size()), const_cast<char**>(args.data()));
+    auto after = std::string(File::Read(path).value().view());
+    CHECK(res == 0);
+    CHECK(before == after);
+}

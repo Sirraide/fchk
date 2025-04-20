@@ -22,10 +22,11 @@ using options = clopts< // clang-format off
     flag<"-a", "Abort on the first failed check">,
     flag<"-v", "Show more verbose error messages">,
     flag<"--nobuiltin", "Disable builtin magic variables (e.g. $LINE)">,
+    flag<"--update", "Update tests instead of checking them">,
     positional<"checkfile", "File containing the check directives", file<>, true>,
     help<>
 >; // clang-format on
-} // namespace detail
+} // namespace fchk::detail
 
 using namespace fchk;
 
@@ -198,14 +199,16 @@ Context::Context(
     std::span<const std::string> defines,
     bool abort_on_error,
     bool verbose,
-    bool enable_builtins
+    bool enable_builtins,
+    bool update
 ) : dh{std::move(dh)},
     check_file{std::move(check), std::move(check_name)},
     default_pragmas(std::move(pragmas)),
     default_literal_chars(std::move(literal_chars)),
     abort_on_error(abort_on_error),
     verbose(verbose),
-    enable_builtins(enable_builtins) {
+    enable_builtins(enable_builtins),
+    update(update) {
     /// Initialise known pragmas.
     if (not default_pragmas.contains("re")) default_pragmas["re"] = false;
     if (not default_pragmas.contains("nocap")) default_pragmas["nocap"] = false;
@@ -580,7 +583,7 @@ class Matcher {
     };
 
     Context* const C;
-    [[maybe_unused]] File& input_file;
+    [[maybe_unused]] CheckFile& input_file;
     std::span<Check> checks;
     std::vector<Line> input_lines;
     std::vector<Line>::iterator in, prev;
@@ -627,7 +630,7 @@ class Matcher {
         }
     };
 
-    Matcher(Context& ctx, File& input_file, std::span<Check> checks) : C{&ctx}, input_file{input_file}, checks{checks} {
+    Matcher(Context& ctx, CheckFile& input_file, std::span<Check> checks) : C{&ctx}, input_file{input_file}, checks{checks} {
         const auto ProcessLine = [&](auto&& r) -> Line {
             auto sv = std::string_view{&*r.begin(), usz(rgs::distance(r))};
             return {stream{sv}.fold_ws(), ctx.LocationIn(sv, input_file)};
@@ -967,7 +970,7 @@ class Matcher {
     }
 
 public:
-    static void Match(Context& ctx, File& input_file, std::span<Check> checks) {
+    static void Match(Context& ctx, CheckFile& input_file, std::span<Check> checks) {
         Matcher{ctx, input_file, checks}.Match();
     }
 };
@@ -1387,6 +1390,54 @@ int Context::Run() {
         if (has_error and abort_on_error) break;
     }
 
+    /// Update the test file if that was requested.
+    if (update) {
+        /// If the output file doesn’t exist, just print the output to
+        /// the diagnostics engine. This is used e.g. for tests.
+        if (not File::Exists(check_file.path)) {
+            dh->write(updated_output);
+            return 0;
+        }
+
+        /// If it does, we need to delete any tests we’ve previously put
+        /// there, if any. Skip over any lines at the end of the file that
+        /// start with any of the prefixes we know of.
+        auto in_lines = stream{check_file.contents}.lines() | rgs::to<std::vector>();
+        auto rev = in_lines.rbegin();
+        auto end = in_lines.rend();
+        for (; rev != end; ++rev) {
+            stream l = *rev;
+            auto StartsWithPrefix = [&] {
+                for (const auto& p : states_by_prefix)
+                    if (l.starts_with(p.prefix))
+                        return true;
+                return false;
+            };
+            if (not l.empty() and not StartsWithPrefix()) break;
+        }
+
+        // Skip over any empty lines.
+        for (; rev != end; ++rev) {
+            stream l = *rev;
+            if (not l.empty()) break;
+        }
+
+        // Append any remaining lines.
+        std::string combined;
+        for (auto l : rgs::subrange{rev, end} | vws::reverse) {
+            combined += l.text();
+            combined += '\n';
+        }
+
+        // Append the new lines.
+        combined += '\n';
+        combined += updated_output;
+
+        // Finally, overwrite the file.
+        if (auto e = File::Write(check_file.path, combined); not e)
+            Error(Location(), "Failed to update output file: {}", e.error());
+    }
+
     return has_error ? 1 : 0;
 }
 
@@ -1439,6 +1490,7 @@ int Context::RunMain(std::shared_ptr<DiagsHandler> dh, int argc, char** argv) {
         opts.get<"-a">(),
         opts.get<"-v">(),
         not opts.get<"--nobuiltin">(),
+        opts.get<"--update">(),
     };
 
     return ctx.Run();
@@ -1471,9 +1523,30 @@ void Context::RunTest(Test& test) {
         return;
     }
 
+    /// In --update modes, ignore verify only commands.
+    if (update and test.verify_only) return;
+
     /// Run the command and get its output.
     VerboseLog("[FCHK] Running command: {}\n", cmd);
     auto res = RunCommand(*this, LocationIn(test.run_directive, check_file), cmd);
+
+    /// In update mode, just collect the output prefixed by the prefix.
+    if (update) {
+        if (not updated_output.empty()) updated_output += '\n';
+        bool first = true;
+        for (auto l : stream{res.output}.trim().lines()) {
+            auto t = l.trim().text();
+            updated_output += std::format(
+                "{} {}{}{}\n",
+                test.state->prefix,
+                first ? '*' : '+',
+                t.empty() ? ""sv : " "sv,
+                t
+            );
+            first = false;
+        }
+        return;
+    }
 
     /// Return early if the command failed.
     if (not res.success) {
@@ -1511,6 +1584,6 @@ void Context::RunTest(Test& test) {
 
     /// In verify mode, there is nothing else to do.
     if (test.verify_only) return;
-    File input_file{res.output, "<input>"};
+    CheckFile input_file{res.output, "<input>"};
     detail::Matcher::Match(*this, input_file, test.state->checks);
 }

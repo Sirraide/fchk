@@ -1,0 +1,29 @@
+# R sed /^#/d %s
+# R[##] sed /^#/d %s | sed 's/^/XX /'
+
+abcd
+1234
+epoqjaefjqwef13tr
+foo b
+
+
+bar    baz
+
+# * abcd
+# + 1234
+# + epoqjaefjqwef13tr
+# + foo b
+# +
+# +
+# + bar    baz
+
+## * XX
+## + XX abcd
+## + XX 1234
+## + XX epoqjaefjqwef13tr
+## + XX foo b
+## + XX
+## + XX
+## + XX bar    baz
+## + XX
+## + XX
