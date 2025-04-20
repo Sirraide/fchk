@@ -1535,7 +1535,7 @@ void Context::RunTest(Test& test) {
         if (not updated_output.empty()) updated_output += '\n';
         bool first = true;
         for (auto l : stream{res.output}.trim().lines()) {
-            auto t = l.trim().text();
+            auto t = l.trim_back().text();
             updated_output += std::format(
                 "{} {}{}{}\n",
                 test.state->prefix,
