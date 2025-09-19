@@ -34,7 +34,7 @@ yourself as part of your project, just add the following lines to your CMakeList
 include(CTest)
 set(FCHK_FORCE_RELEASE ON) # Always build fchk in Release mode.
 add_subdirectory(fchk)
-FCHKAddAllTestsInDir(
+FCHKAddAllTestsInDir(my_test_suite
     IN tests more_tests
     PATTERN "*.foo" "*.bar"
     PREFIX "#"

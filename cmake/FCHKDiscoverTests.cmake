@@ -19,11 +19,12 @@ endif()
 ##
 ## Example:
 ##   FCHKAddAllTestsInDir(
+##     my_test_suite
 ##     IN tests more_tests
 ##     PATTERN "*.foobar"
 ##     RECURSIVE
 ##   )
-function(FCHKAddAllTestsInDir)
+function(FCHKAddAllTestsInDir TARGET)
     set(FCHKAddAllTestsInDir_PREFIX "")
     set(FCHKAddAllTestsInDir_WORKING_DIRECTORY "${CMAKE_BINARY_DIR}")
 
@@ -39,7 +40,7 @@ function(FCHKAddAllTestsInDir)
 
     set(fchk_prefix "")
     if (FCHKAddAllTestsInDir_PREFIX)
-        set(fchk_prefix --prefix ${FCHKAddAllTestsInDir_PREFIX})
+        set(fchk_prefix ${FCHKAddAllTestsInDir_PREFIX})
     endif()
 
     ## Ungodly jank to allow people to add dependencies on other targets to the tests.
@@ -60,28 +61,28 @@ function(FCHKAddAllTestsInDir)
                 )
             endif()
         endforeach()
-   endif()
+    endif()
 
-    foreach (dir ${FCHKAddAllTestsInDir_IN})
-        foreach (pat ${FCHKAddAllTestsInDir_PATTERN})
-            file(GLOB_RECURSE tests "${dir}/${pat}")
-            foreach (test ${tests})
-                add_test(
-                    NAME "${FCHKAddAllTestsInDir_TEST_NAME_PREFIX}${test}"
-                    COMMAND
-                        ${FCHK_EXE_PATH}
-                        ${fchk_prefix}
-                        ${FCHKAddAllTestsInDir_ARGS}
-                        ${test}
-                    WORKING_DIRECTORY ${FCHKAddAllTestsInDir_WORKING_DIRECTORY}
-                )
+    foreach(dir ${FCHKAddAllTestsInDir_IN})
+        string(APPEND FCHKAddAllTestsInDir_absolute_paths " [==[${CMAKE_CURRENT_SOURCE_DIR}/${dir}]==]")
+    endforeach ()
 
-                if (FCHKAddAllTestsInDir_DEPENDS)
-                    set_tests_properties("${FCHKAddAllTestsInDir_TEST_NAME_PREFIX}${test}"
-                        PROPERTIES FIXTURES_REQUIRED _fchk_build_deps
-                    )
-                endif()
-            endforeach()
-        endforeach()
+    foreach(arg ${FCHKAddAllTestsInDir_ARGS})
+      string(APPEND FCHKAddAllTestsInDir_ARGS_ESCAPED " [==[${arg}]==]")
     endforeach()
+
+    configure_file(
+        "${CMAKE_CURRENT_FUNCTION_LIST_DIR}/_FCHKDiscoverTestsImpl.in.cmake"
+        "${CMAKE_CURRENT_BINARY_DIR}/_FCHKDiscoverTestsImpl.cmake"
+        @ONLY
+    )
+
+    file(GENERATE
+        OUTPUT "${CMAKE_CURRENT_BINARY_DIR}/_fchk_discover_${TARGET}.cmake"
+        INPUT "${CMAKE_CURRENT_BINARY_DIR}/_FCHKDiscoverTestsImpl.cmake"
+    )
+
+    set_property(DIRECTORY APPEND PROPERTY
+        TEST_INCLUDE_FILES "${CMAKE_CURRENT_BINARY_DIR}/_fchk_discover_${TARGET}.cmake"
+    )
 endfunction()
