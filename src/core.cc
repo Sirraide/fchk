@@ -1228,7 +1228,7 @@ void Context::CollectDirectives(PrefixState& state) {
                     /// No-op if no chars were provided
                     if (arg.empty()) {
                         Warning(
-                            LocationIn(arg, check_file),
+                            LocationIn(arg.text(), check_file),
                             "Empty '{}' pragma ignored",
                             name
                         );
@@ -1238,14 +1238,14 @@ void Context::CollectDirectives(PrefixState& state) {
 
                     /// Making backslashes literal would break things.
                     if (name == "lit" and arg.contains('\\')) Error(
-                        LocationIn(arg, check_file),
+                        LocationIn(arg.text(), check_file),
                         "Escape character '\\' cannot be made literal",
                         name
                     );
 
                     /// Warn about '(' and ')'.
                     if (arg.contains('(') or arg.contains(')')) Warning(
-                        LocationIn(arg, check_file),
+                        LocationIn(arg.text(), check_file),
                         "Prefer using 'p nocap' over making '(' or ')' (not) literal "
                         "as the latter can cause the regex engine to error."
                     );
@@ -1255,7 +1255,7 @@ void Context::CollectDirectives(PrefixState& state) {
                     /// wouldn’t to anything even if we accepted it.
                     if (arg == "off") {
                         Warning(
-                            LocationIn(arg, check_file),
+                            LocationIn(arg.text(), check_file),
                             "Syntax of '{}' pragma is 'p {} <chars>'",
                             name,
                             name
@@ -1282,14 +1282,14 @@ void Context::CollectDirectives(PrefixState& state) {
                 else {
                     /// Ignore unknown pragmas.
                     if (not state.pragmas.contains(name)) {
-                        Warning(LocationIn(name, check_file), "Unknown pragma ignored");
+                        Warning(LocationIn(name.text(), check_file), "Unknown pragma ignored");
 
                         continue;
                     }
 
                     /// Pragmas take an optional ‘off’ parameter.
                     if (not arg.empty() and arg != "off") Warning(
-                        LocationIn(arg, check_file),
+                        LocationIn(arg.text(), check_file),
                         "Unknown pragma argument ignored"
                     );
 
@@ -1516,7 +1516,7 @@ void Context::RunTest(Test& test) {
             LocationIn(def_str, check_file),
             "'{}' is not defined. Define it on the command-line using '-D {}=...'",
             def,
-            def.substr(1)
+            str(def).drop()
         );
 
         /// Don’t even bother running this.
