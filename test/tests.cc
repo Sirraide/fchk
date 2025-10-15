@@ -69,34 +69,68 @@ TEST_CASE("Syntax of '-D' option") {
     CheckDriverOk("-D", "test=foo", "--prefix=#");
 }
 
+TEST_CASE("Cannot redefine '%s' or '%t'") {
+    CheckDriverError(std::format(ERR_DRV_ST_REDEF, 's'), "-D=s=2");
+    CheckDriverError(std::format(ERR_DRV_ST_REDEF, 't'), "-D=t=2");
+}
+
 /// ===========================================================================
 ///  FCHK Tests
 /// ===========================================================================
-void ExpectOutput(
-    std::string_view input,
+static auto ExpectOutputImpl(
+    str input,
     int ret_val,
-    std::string_view output,
-    std::string prefix = "#"
-) {
+    str prefix
+) -> std::string {
     auto dh = std::make_shared<TestDiagsHandler>();
-    Context ctx{dh, std::string{stream(input).trim().text()}, "<input>", std::move(prefix)};
+    Context ctx{dh, std::string{input.trim().text()}, "<input>", prefix.string()};
     auto res = ctx.Run();
     CHECK(res == ret_val);
-    CHECK(stream(dh->output).trim().text() == stream(output).trim().text());
+    return std::move(dh->output);
 }
 
-void ExpectOutput2(
-    std::string input,
-    std::string_view checks,
+static void ExpectOutput(
+    str input,
     int ret_val,
-    std::string_view output
+    str output,
+    str prefix = "#"
 ) {
-    utils::ReplaceAll(input, "\n", "\\n"); // Escape newlines so this is parsed as one line.
-    ExpectOutput(std::format("# R echo -e \"{}\"\n{}", utils::Escape(input, true), checks), ret_val, output);
+    CHECK(str(ExpectOutputImpl(input, ret_val, prefix)).trim().text() == output.trim().text());
 }
 
-void ExpectMatch(std::string in, std::string_view tests) {
-    return ExpectOutput2(std::move(in), tests, 0, "");
+static void ExpectOutputStartsWith(
+    str input,
+    int ret_val,
+    str output,
+    str prefix = "#"
+) {
+    CHECK(str(ExpectOutputImpl(input, ret_val, prefix)).trim().text().starts_with(output.trim().text()));
+}
+
+static void ExpectOutputContains(
+    str input,
+    int ret_val,
+    str output,
+    str prefix = "#"
+) {
+    CHECK(str(ExpectOutputImpl(input, ret_val, prefix)).trim().text().contains(output.trim().text()));
+}
+
+static void ExpectOutput2(
+    str input,
+    str checks,
+    int ret_val,
+    str output
+) {
+    ExpectOutput(
+        std::format("# R echo -e \"{}\"\n{}", utils::Escape(input, true), checks),
+        ret_val,
+        output
+    );
+}
+
+static void ExpectMatch(str in, str tests) {
+    return ExpectOutput2(in, tests, 0, "");
 }
 
 /// FIXME: Actually split the big file into separate tests.
@@ -148,6 +182,14 @@ TEST_CASE("%s designates the current file") {
     ExpectOutput("# V echo '%s' ; false", 1, "<input>");
 }
 
+TEST_CASE("%t designates a temporary file") {
+    ExpectOutputStartsWith(
+        "# V echo '%t' ; false",
+        1,
+        std::filesystem::temp_directory_path().string()
+    );
+}
+
 TEST_CASE("Prefixed lines not starting with a directive are ignored") {
     ExpectOutput(
         "# R true\n # Really not a directive\n # AlsoNotADirective\n",
@@ -157,7 +199,7 @@ TEST_CASE("Prefixed lines not starting with a directive are ignored") {
 }
 
 TEST_CASE("Basic matching") {
-    auto in = "abcd\n1234\nfoo\nbar";
+    str in = "abcd\n1234\nfoo\nbar";
 
     ExpectMatch(in,
                 R"(
@@ -315,4 +357,12 @@ TEST_CASE("Ensure that 'update' works") {
     auto after = std::string(File::Read(path).value().view());
     CHECK(res == 0);
     CHECK(before == after);
+}
+
+TEST_CASE("Definitions") {
+    ExpectOutputContains(
+        "# V echo '%asdf' ; false",
+        1,
+        "Error: 'asdf' is not defined. Define it on the command-line using '-D asdf=...'"
+    );
 }

@@ -3,6 +3,7 @@
 
 #include <base/Base.hh>
 #include <base/FS.hh>
+#include <base/Trie.hh>
 #include <clopts.hh>
 #include <deque>
 #include <functional>
@@ -370,7 +371,7 @@ class Context {
     std::unordered_set<char> default_literal_chars;
 
     /// Definitions for run directives.
-    StringMap<std::string> definitions;
+    trie definitions;
 
     /// Updated output, prefixed by prefixes. Only used for '--update'.
     std::string updated_output;
