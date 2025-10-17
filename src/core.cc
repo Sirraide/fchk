@@ -1524,16 +1524,14 @@ void Context::RunTest(Test& test) {
         return;
     }
 
-    /// In --update modes, ignore verify only commands.
-    if (update and test.verify_only) return;
-
     /// Run the command and get its output.
     auto cmd = definitions.replace(test.run_directive);
     VerboseLog("[FCHK] Running command: {}\n", cmd);
     auto res = RunCommand(*this, LocationIn(test.run_directive, check_file), cmd);
 
-    /// In update mode, just collect the output prefixed by the prefix.
-    if (update) {
+    /// In update mode, just collect the output prefixed by the prefix; ignore
+    /// verify only commands here.
+    if (update and not test.verify_only) {
         if (not updated_output.empty()) updated_output += '\n';
         bool first = true;
         for (auto l : str{res.output}.trim().lines()) {
