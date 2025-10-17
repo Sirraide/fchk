@@ -226,6 +226,9 @@ Context::Context(
         if (name.contains_any(str::whitespace())) Error(Location(), "Defined names may not contain whitespace");
         definitions.add(std::format("%{}", name), d.text());
     }
+
+    /// The '%t' variable is global per file.
+    definitions.add("%t", fs::TempPath());
 }
 
 /// ===========================================================================
@@ -1499,7 +1502,6 @@ int Context::RunMain(std::shared_ptr<DiagsHandler> dh, int argc, char** argv) {
 void Context::RunTest(Test& test) {
     /// Update builtin definitions.
     definitions.add("%s", check_file.path.string());
-    definitions.add("%t", fs::TempPath());
 
     /// Warn about unknown '%' defines. Do this BEFORE substitution since it’s
     /// valid for the replacement text to contain '%'.

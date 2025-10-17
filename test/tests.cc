@@ -77,7 +77,7 @@ TEST_CASE("Cannot redefine '%s' or '%t'") {
 /// ===========================================================================
 ///  FCHK Tests
 /// ===========================================================================
-static auto ExpectOutputImpl(
+static auto RunAndGetOutput(
     str input,
     int ret_val,
     str prefix
@@ -95,7 +95,7 @@ static void ExpectOutput(
     str output,
     str prefix = "#"
 ) {
-    CHECK(str(ExpectOutputImpl(input, ret_val, prefix)).trim().text() == output.trim().text());
+    CHECK(str(RunAndGetOutput(input, ret_val, prefix)).trim().text() == output.trim().text());
 }
 
 static void ExpectOutputStartsWith(
@@ -104,7 +104,7 @@ static void ExpectOutputStartsWith(
     str output,
     str prefix = "#"
 ) {
-    CHECK(str(ExpectOutputImpl(input, ret_val, prefix)).trim().text().starts_with(output.trim().text()));
+    CHECK(str(RunAndGetOutput(input, ret_val, prefix)).trim().text().starts_with(output.trim().text()));
 }
 
 static void ExpectOutputContains(
@@ -113,7 +113,7 @@ static void ExpectOutputContains(
     str output,
     str prefix = "#"
 ) {
-    CHECK(str(ExpectOutputImpl(input, ret_val, prefix)).trim().text().contains(output.trim().text()));
+    CHECK(str(RunAndGetOutput(input, ret_val, prefix)).trim().text().contains(output.trim().text()));
 }
 
 static void ExpectOutput2(
