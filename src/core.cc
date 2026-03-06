@@ -1,10 +1,11 @@
 #include <base/FS.hh>
 #include <base/Text.hh>
-#include <clopts.hh>
+#include <base/Clopts.hh>
 #include <cmath>
 #include <core.hh>
 #include <errs.hh>
 #include <unordered_map>
+#include <format>
 
 #ifdef _WIN32
 #    define NOMINMAX
@@ -12,7 +13,7 @@
 #endif
 
 namespace fchk::detail {
-using namespace command_line_options;
+using namespace base::cmd;
 using options = clopts< // clang-format off
     option<"--prefix", "Check prefix to use">,
     multiple<option<"-l", "Treat character(s) as literal">>,
@@ -611,12 +612,18 @@ class Matcher {
             /// Print only a couple of lines so we don’t dump 2000 lines of output
             /// if the input is long. We start printing one line before the one we
             /// started matching from;
+            static constexpr usz max_lines = 7;
             const auto lc = it->loc.seek_line_column();
             const auto start = lc.line == 1 ? 1 : lc.line - 1;
             for (auto [i, line] : vws::enumerate(rgs::subrange{prev, M.input_lines.end()})) {
-                static constexpr usz max_lines = 7;
                 if (usz(i) >= max_lines) break;
-                M.C->dh->print(" {: >{}} │ ", start + usz(i), std::to_string(start + max_lines - 1).size());
+
+                // FIXME: Format string checking for this string is currently broken w/ Clang because
+                // of the constexpr function instantiation issue; remove 'std::runtime_format()' once
+                // that's fixed.
+                //
+                // See https://github.com/llvm/llvm-project/issues/151371.
+                M.C->dh->print(std::runtime_format(" {: >{}} │ "), start + usz(i), std::to_string(start + max_lines - 1).size());
                 if (i == 1 - (lc.line == 1)) {
                     M.C->dh->print(
                         "{}{}\n{}",
@@ -1484,7 +1491,7 @@ int Context::RunMain(std::shared_ptr<DiagsHandler> dh, int argc, char** argv) {
 
     Context ctx{
         dh,
-        std::move(opts.get<"checkfile">()->contents),
+        std::string{opts.get<"checkfile">()->contents},
         std::move(opts.get<"checkfile">()->path),
         opts.get<"--prefix">(""),
         std::move(pragmas),
@@ -1584,6 +1591,14 @@ void Context::RunTest(Test& test) {
 
     /// In verify mode, there is nothing else to do.
     if (test.verify_only) return;
+
+    /// Outside of verify mode, we require at least one test.
+    if (test.state->checks.empty()) Error(
+        LocationIn(test.run_directive, check_file),
+        "No check directives found for prefix '{}'",
+        test.state->prefix
+    );
+
     CheckFile input_file{res.output, "<input>"};
     detail::Matcher::Match(*this, input_file, test.state->checks);
 }

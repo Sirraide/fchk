@@ -4,7 +4,7 @@
 #include <base/Base.hh>
 #include <base/FS.hh>
 #include <base/Trie.hh>
-#include <clopts.hh>
+#include <base/Clopts.hh>
 #include <deque>
 #include <functional>
 #include <map>

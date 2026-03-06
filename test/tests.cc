@@ -52,8 +52,8 @@ void CheckDriverError(SV message, Args... args) {
 template <typename... Args>
 void CheckDriverOk(Args... args) {
     auto [res, output] = RunDriver(args...);
-    CHECK(res == 0);
-    CHECK(output == "");
+    CHECK(res == 1);
+    CHECK(output.contains("No check directives found"));
 }
 
 TEST_CASE("Syntax of '--prefix' option") {
@@ -136,12 +136,10 @@ static void ExpectMatch(str in, str tests) {
 /// FIXME: Actually split the big file into separate tests.
 TEST_CASE("Tests in big file pass") {
     auto dh = std::make_shared<TestDiagsHandler>();
-    auto f = command_line_options::detail::map_file<command_line_options::file<>>(
-        FCHK_PROJECT_DIR "/test/inputs/basic.txt"sv,
-        dh->get_error_handler()
-    );
+    auto path = FCHK_PROJECT_DIR "/test/inputs/basic.txt"sv;
+    auto f = File::Read(path).value();
 
-    Context ctx{dh, f.contents, f.path};
+    Context ctx{dh, std::string{f.view()}, path};
     auto res = ctx.Run();
     CHECK(res == 0);
     CHECK(dh->output == "");
@@ -159,11 +157,15 @@ TEST_CASE("Complain if no prefix is set") {
 TEST_CASE("Warn on attempted prefix override") {
     ExpectOutput(
         "# FCHK-PREFIX X\n# R true\n",
-        0,
+        1,
         R"(
 <input>:1:3: Warning: Conflicting prefix directive 'X' ignored (current prefix is '#')
  1 │ # FCHK-PREFIX X
        ~~~~~~~~~~~
+
+<input>:2:5: Error: No check directives found for prefix '#'
+ 2 │ # R true
+         ~~~~
         )"
     );
 }
@@ -193,8 +195,12 @@ TEST_CASE("%t designates a temporary file") {
 TEST_CASE("Prefixed lines not starting with a directive are ignored") {
     ExpectOutput(
         "# R true\n # Really not a directive\n # AlsoNotADirective\n",
-        0,
-        ""
+        1,
+        R"(
+<input>:1:5: Error: No check directives found for prefix '#'
+ 1 │ # R true
+         ~~~~
+        )"
     );
 }
 
@@ -286,6 +292,27 @@ TEST_CASE("+ can’t skip lines") {
  4 │ D
  5 │
         )"
+    );
+}
+
+TEST_CASE("No checks is an error") {
+    ExpectOutput2(
+        "A\nB\nC\nD",
+        "",
+        1,
+        R"(
+<input>:1:5: Error: No check directives found for prefix '#'
+ 1 │ # R echo -e "A\nB\nC\nD"
+         ~~~~~~~~~~~~~~~~~~~~
+        )"
+    );
+}
+
+TEST_CASE("No checks in verify mode is ok") {
+    ExpectOutput(
+        std::format("# V true"),
+        0,
+        ""
     );
 }
 
