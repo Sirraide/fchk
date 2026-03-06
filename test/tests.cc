@@ -316,6 +316,14 @@ TEST_CASE("No checks in verify mode is ok") {
     );
 }
 
+TEST_CASE("Ignored tests are ignored") {
+    ExpectOutput(
+        std::format("# I false"),
+        0,
+        ""
+    );
+}
+
 TEST_CASE("Regular expression matching") {
     ExpectMatch(
         "1234567890\n"

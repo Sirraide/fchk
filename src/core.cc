@@ -793,6 +793,7 @@ class Matcher {
         LineContext context{*this};
         switch (chk->dir) {
             /// These should no longer exist here.
+            case Directive::Ignore:
             case Directive::Prefix:
             case Directive::Run:
             case Directive::Pragma:
@@ -988,7 +989,7 @@ public:
     }
 };
 
-static_assert(DirectiveNames.size() == 19, "Update the map below when directives are added");
+static_assert(DirectiveNames.size() == 20, "Update the map below when directives are added");
 static std::unordered_map<std::string_view, Directive> NameDirectiveMap{
     {DirectiveNames[+Directive::CheckAny], Directive::CheckAny},
     {DirectiveNames[+Directive::CheckNext], Directive::CheckNext},
@@ -1007,6 +1008,7 @@ static std::unordered_map<std::string_view, Directive> NameDirectiveMap{
     {DirectiveNames[+Directive::Pragma], Directive::Pragma},
     {DirectiveNames[+Directive::Prefix], Directive::Prefix},
     {DirectiveNames[+Directive::Run], Directive::Run},
+    {DirectiveNames[+Directive::Ignore], Directive::Ignore},
     {DirectiveNames[+Directive::Verify], Directive::Verify},
     {DirectiveNames[+Directive::XFail], Directive::XFail},
 };
@@ -1016,12 +1018,13 @@ const auto RunWithPrefixDirectiveNameStart = std::format("{}[", DirectiveNames[+
 } // namespace fchk::detail
 
 void Context::CollectDirectives(PrefixState& state) {
-    stream chfile{check_file.contents};
+    str chfile{check_file.contents};
 
     /// Check if a directive causes a new test to be run.
     auto IsRunDirective = [](Directive dir) {
         switch (dir) {
             default: return false;
+            case Directive::Ignore:
             case Directive::Run:
             case Directive::Verify:
             case Directive::XFail:
@@ -1101,12 +1104,7 @@ void Context::CollectDirectives(PrefixState& state) {
 
         /// Run/Verify directives.
         if (IsRunDirective(it->second)) {
-            run_directives.emplace_back(
-                value,
-                &state,
-                it->second != Directive::Run,
-                it->second == Directive::XFail
-            );
+            run_directives.emplace_back(value, &state, it->second);
             continue;
         }
 
@@ -1185,6 +1183,7 @@ void Context::CollectDirectives(PrefixState& state) {
 
         /// Handle directive.
         switch (it->second) {
+            case Directive::Ignore:
             case Directive::Prefix:
             case Directive::Run:
             case Directive::Verify:
@@ -1507,6 +1506,9 @@ int Context::RunMain(std::shared_ptr<DiagsHandler> dh, int argc, char** argv) {
 }
 
 void Context::RunTest(Test& test) {
+    /// Skip ignored tests.
+    if (test.dir == Directive::Ignore) return;
+
     /// Update builtin definitions.
     definitions.add("%s", check_file.path.string());
 
@@ -1538,7 +1540,7 @@ void Context::RunTest(Test& test) {
 
     /// In update mode, just collect the output prefixed by the prefix; ignore
     /// verify only commands here.
-    if (update and not test.verify_only) {
+    if (update and test.dir != Directive::Verify) {
         if (not updated_output.empty()) updated_output += '\n';
         bool first = true;
         for (auto l : str{res.output}.trim().lines()) {
@@ -1558,10 +1560,10 @@ void Context::RunTest(Test& test) {
     /// Return early if the command failed.
     if (not res.success) {
         /// This was expected.
-        if (test.xfail) return;
+        if (test.dir == Directive::XFail) return;
 
         /// Don’t print an error in verify mode.
-        if (test.verify_only) {
+        if (test.dir == Directive::Verify) {
             dh->write(res.output);
         } else {
             Error(
@@ -1578,7 +1580,7 @@ void Context::RunTest(Test& test) {
     }
 
     /// We were supposed to fail.
-    if (test.xfail) {
+    if (test.dir == Directive::XFail) {
         Error(
             LocationIn(test.run_directive, check_file),
             "Command '{}' succeeded even though it was expected to fail",
@@ -1590,7 +1592,7 @@ void Context::RunTest(Test& test) {
     }
 
     /// In verify mode, there is nothing else to do.
-    if (test.verify_only) return;
+    if (test.dir == Directive::Verify) return;
 
     /// Outside of verify mode, we require at least one test.
     if (test.state->checks.empty()) Error(

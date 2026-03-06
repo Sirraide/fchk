@@ -91,6 +91,7 @@ enum struct Directive : u8 {
     Pragma,
     Prefix,
     Run,
+    Ignore,
     Verify,
     XFail,
     Count = XFail,
@@ -114,6 +115,7 @@ inline constexpr std::array DirectiveToRegexDirective{
     Directive::Pragma,
     Directive::Prefix,
     Directive::Run,
+    Directive::Ignore,
     Directive::Verify,
     Directive::XFail,
 };
@@ -136,6 +138,7 @@ inline constexpr std::array DirectiveNames{
     "p"sv,
     "FCHK-PREFIX"sv,
     "R"sv,
+    "I"sv,
     "V"sv,
     "X"sv,
 };
@@ -348,8 +351,7 @@ class Context {
     struct Test {
         std::string_view run_directive;
         PrefixState* state;
-        bool verify_only;
-        bool xfail;
+        Directive dir;
     };
 
     /// Diagnostics handler.
